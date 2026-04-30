@@ -121,12 +121,15 @@ class AutoIncomeGenerator:
         await page.click("button[type='submit']")
         await asyncio.sleep(15) 
         
+        # Screenshot ရိုက်၍ Login အောင်မြင်/မမြင် စစ်ဆေးခြင်း
+        await page.screenshot(path="login_status.png", full_page=True)
+        logger.info("📸 Saved login status screenshot.")
+        
         cookies = await page.context.cookies()
         if self.redis:
             self.redis.set("freelancer_session_cookies", json.dumps(cookies))
         return True
 
-    # ---> THE FINAL FIX: Stale Element & Angular UI Bypass <---
     async def execute_bidding(self, page):
         logger.info(">>> STARTING BIDDING PHASE <<<")
         try:
@@ -136,7 +139,6 @@ class AutoIncomeGenerator:
             job_cards = await page.query_selector_all(self.ui["job_card"])
             logger.info(f"🔍 Found {len(job_cards)} potential jobs on search page.")
             
-            # ပြဿနာ ၁ ဖြေရှင်းခြင်း: လင့်ခ်များကို အရင်ဆုံး ဆွဲထုတ်မှတ်သားထားခြင်း
             extracted_jobs = []
             for card in job_cards[:2]:
                 title_elem = await card.query_selector(self.ui["job_title"])
@@ -148,7 +150,6 @@ class AutoIncomeGenerator:
                     if job_link:
                         extracted_jobs.append({"title": title, "link": job_link, "desc": desc})
             
-            # မှတ်သားထားသော လင့်ခ်များအတိုင်း အလုပ်တစ်ခုချင်းစီ ဝင်ရောက်ခြင်း
             for job in extracted_jobs:
                 try:
                     title = job["title"]
@@ -164,17 +165,15 @@ class AutoIncomeGenerator:
                         
                         if proposal:
                             logger.info("🧠 AI Proposal Generated. Navigating to project page...")
-                            # စာမျက်နှာ အပြည့်အဝ ပွင့်သည်အထိ စောင့်ရန် 'networkidle' အသုံးပြုထားသည်
                             await page.goto(f"https://www.freelancer.com{job_link}", wait_until="networkidle")
                             await asyncio.sleep(5)
                             
-                            # ပြဿနာ ၂ ဖြေရှင်းခြင်း: Angular Form Control နာမည်များကိုပါ ထည့်သွင်းထားသည်
                             box_selectors = [
                                 "textarea#description", 
                                 "textarea[formcontrolname='description']", 
                                 "textarea[name='description']",
                                 "app-bid-form textarea",
-                                "textarea" # နောက်ဆုံးအားထားရာ
+                                "textarea" 
                             ]
                             
                             box_found = False
@@ -187,23 +186,23 @@ class AutoIncomeGenerator:
                             
                             if not box_found:
                                 logger.warning(f"❌ Could not find Proposal Box for {title}")
+                                # ---> မျက်မြင်သက်သေ Screenshot ရိုက်ယူခြင်း <---
+                                await page.screenshot(path="error.png", full_page=True)
+                                logger.info("📸 ERROR SCREENSHOT SAVED! Please view it via your Render URL.")
                                 continue
 
-                            # Bid Amount
                             for sel in ["input#bid", "input[formcontrolname='bidAmount']", "input[name='bidAmount']"]:
                                 elements = page.locator(sel)
                                 if await elements.count() > 0 and await elements.first.is_visible():
                                     await elements.first.fill(str(random.randint(20, 60)))
                                     break
 
-                            # Delivery Days
                             for sel in ["input#period", "input[formcontrolname='period']", "input[name='period']"]:
                                 elements = page.locator(sel)
                                 if await elements.count() > 0 and await elements.first.is_visible():
                                     await elements.first.fill(str(random.randint(2, 4)))
                                     break
 
-                            # Submit Button
                             btn_selectors = [
                                 "button.PlaceBid-btn",
                                 "button:has-text('Place Bid')",
