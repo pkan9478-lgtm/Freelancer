@@ -15,37 +15,29 @@ from playwright.async_api import async_playwright
 from telegram import Bot
 from groq import AsyncGroq
 
+# [Safe & Correct Stealth Import for V2.0+]
+try:
+    from playwright_stealth import Stealth
+    USE_STEALTH = True
+except ImportError:
+    USE_STEALTH = False
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("PhoGo_Ultra_Gen")
 
 PORT = int(os.environ.get("PORT", 10000))
 
-# [Safe & Correct Stealth Import]
-try:
-    from playwright_stealth import stealth_async
-except ImportError:
-    try:
-        from playwright_stealth import Stealth
-        async def stealth_async(page):
-            # Version အသစ်၏ Async Context Manager ကို မှန်ကန်စွာ Handle လုပ်ခြင်း
-            async with Stealth().use_async(page):
-                pass
-    except Exception as e:
-        stealth_async = None
-        logger.warning(f"Playwright Stealth library issue: {e}. Using standard headless mode.")
-
 def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
     
-    # ဤနေရာတွင် Port Address Already in Use Error ကို အမြစ်ပြတ် ဖြေရှင်းထားပါသည်
     socketserver.TCPServer.allow_reuse_address = True
-    
     try:
         with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
             httpd.serve_forever()
-    except Exception as e:
-        logger.warning(f"Health server warning: {e}")
+    except OSError as e:
+        # Port ပြဿနာတက်ခဲ့လျှင် Bot ရပ်မသွားစေရန် ကျော်ဖြတ်ခြင်း
+        logger.warning(f"Health server warning (Ignored): {e}")
 
 def self_ping():
     url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
@@ -70,7 +62,7 @@ class AutoIncomeGenerator:
             self.groq_client = AsyncGroq(api_key=self.groq_key)
         else:
             self.groq_client = None
-            logger.error("CRITICAL ERROR: GROQ_API_KEY is missing in Render Environment Variables!")
+            logger.error("CRITICAL ERROR: GROQ_API_KEY is missing!")
 
         self.ui = {
             "login_email": "input[type='email']",
@@ -237,45 +229,54 @@ class AutoIncomeGenerator:
 
     async def system_core(self):
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True, 
-                args=[
-                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
-                    "--js-flags=--max-old-space-size=256", "--disable-blink-features=AutomationControlled"
-                ]
-            )
-            context = await browser.new_context(
-                viewport={'width': 1366, 'height': 768},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
             
-            if stealth_async:
-                await stealth_async(page)
-            
-            async def block_resources(route):
-                if route.request.resource_type in ["image", "font", "stylesheet"]:
-                    await route.abort()
-                else:
-                    await route.continue_()
+            # ---> THE FINAL STEALTH FIX <---
+            # Stealth ကို "p" (Engine ကြီးတစ်ခုလုံး) အပေါ်သို့ လွှမ်းခြုံထားခြင်း
+            if USE_STEALTH:
+                stealth_context = Stealth().use_async(p)
+            else:
+                from contextlib import asynccontextmanager
+                @asynccontextmanager
+                async def dummy_context(): yield
+                stealth_context = dummy_context()
 
-            await page.route("**/*", block_resources)
+            async with stealth_context:
+                browser = await p.chromium.launch(
+                    headless=True, 
+                    args=[
+                        "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
+                        "--js-flags=--max-old-space-size=256", "--disable-blink-features=AutomationControlled"
+                    ]
+                )
+                context = await browser.new_context(
+                    viewport={'width': 1366, 'height': 768},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+                
+                async def block_resources(route):
+                    if route.request.resource_type in ["image", "font", "stylesheet"]:
+                        await route.abort()
+                    else:
+                        await route.continue_()
 
-            try:
-                await self.handle_login(page)
-                while True:
-                    await self.execute_bidding(page)
-                    await self.handle_negotiations_and_delivery(page)
-                    gc.collect() 
-                    
-                    sleep_time = random.randint(1800, 3600)
-                    logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
-                    await asyncio.sleep(sleep_time)
-            except Exception as e:
-                logger.critical(f"System Crash in loop: {e}")
-                logger.critical(traceback.format_exc())
-            finally:
-                await browser.close()
+                await page.route("**/*", block_resources)
+
+                try:
+                    await self.handle_login(page)
+                    while True:
+                        await self.execute_bidding(page)
+                        await self.handle_negotiations_and_delivery(page)
+                        gc.collect() 
+                        
+                        sleep_time = random.randint(1800, 3600)
+                        logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
+                        await asyncio.sleep(sleep_time)
+                except Exception as e:
+                    logger.critical(f"System Crash in loop: {e}")
+                    logger.critical(traceback.format_exc())
+                finally:
+                    await browser.close()
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
