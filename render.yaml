@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: auto-income-generator
+    env: docker
+    region: singapore 
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: FL_EMAIL
+        sync: false
+      - key: FL_PASSWORD
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_USER_ID
+        sync: false
+      - key: POE_PB_COOKIE
+        sync: false
