@@ -20,7 +20,7 @@ logger = logging.getLogger("PhoGo_Ultra_Gen")
 
 PORT = int(os.environ.get("PORT", 10000))
 
-# [Safe Stealth Import] Error တက်ခဲ့လျှင် Bot ရပ်မသွားစေရန် ကာကွယ်ထားသည်
+# [Safe Stealth Import]
 try:
     from playwright_stealth import stealth_async
 except ImportError:
@@ -44,7 +44,6 @@ def self_ping():
 
 class AutoIncomeGenerator:
     def __init__(self):
-        # Prevent Crash if environment variables are missing
         self.redis_url = os.getenv("REDIS_URL")
         self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.user_id = os.getenv("TELEGRAM_USER_ID")
@@ -82,7 +81,8 @@ class AutoIncomeGenerator:
             try: await self.bot.send_message(self.user_id, msg, parse_mode='HTML')
             except: pass
 
-    async def get_ai_brain(self, prompt, model="llama3-70b-8192"):
+    # ---> ပြင်ဆင်ထားသောနေရာ: Groq ရဲ့ အသစ်ဆုံး Model ကို ပြောင်းလဲအသုံးပြုထားသည် <---
+    async def get_ai_brain(self, prompt, model="llama-3.3-70b-versatile"):
         if not self.groq_client: return None
         try:
             chat_completion = await self.groq_client.chat.completions.create(
@@ -238,7 +238,6 @@ class AutoIncomeGenerator:
             )
             page = await context.new_page()
             
-            # Safe Stealth Execution
             if stealth_async:
                 await stealth_async(page)
             
@@ -270,7 +269,6 @@ if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()
     
-    # ပြင်ပ Error အားလုံးကို ဖမ်းယူပြီး Log ထုတ်ပေးမည့်နေရာ
     try:
         engine = AutoIncomeGenerator()
         asyncio.run(engine.system_core())
