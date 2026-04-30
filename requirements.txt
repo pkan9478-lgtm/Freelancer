@@ -1,5 +1,4 @@
 playwright
-playwright-stealth
 redis
 python-telegram-bot
 requests
