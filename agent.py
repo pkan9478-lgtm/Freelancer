@@ -23,7 +23,6 @@ PORT = int(os.environ.get("PORT", 10000))
 def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
-    
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
@@ -127,43 +126,62 @@ class AutoIncomeGenerator:
             self.redis.set("freelancer_session_cookies", json.dumps(cookies))
         return True
 
-    # ---> အဆင့်မြှင့်တင်ထားသော Smart Bidding Engine <---
+    # ---> THE FINAL FIX: Stale Element & Angular UI Bypass <---
     async def execute_bidding(self, page):
         logger.info(">>> STARTING BIDDING PHASE <<<")
         try:
             await page.goto("https://www.freelancer.com/search/projects?q=python%20react%20automation%20bot", wait_until="domcontentloaded")
             await asyncio.sleep(5)
             
-            jobs = await page.query_selector_all(self.ui["job_card"])
-            logger.info(f"🔍 Found {len(jobs)} potential jobs.")
+            job_cards = await page.query_selector_all(self.ui["job_card"])
+            logger.info(f"🔍 Found {len(job_cards)} potential jobs on search page.")
             
-            for job in jobs[:2]:
-                try:
-                    title_elem = await job.query_selector(self.ui["job_title"])
-                    if not title_elem: continue
-                    
+            # ပြဿနာ ၁ ဖြေရှင်းခြင်း: လင့်ခ်များကို အရင်ဆုံး ဆွဲထုတ်မှတ်သားထားခြင်း
+            extracted_jobs = []
+            for card in job_cards[:2]:
+                title_elem = await card.query_selector(self.ui["job_title"])
+                if title_elem:
                     title = await title_elem.inner_text()
                     job_link = await title_elem.get_attribute("href")
-                    jid = job_link.split("/")[-1] if job_link else None
+                    desc_elem = await card.query_selector(self.ui["job_desc"])
+                    desc = await desc_elem.inner_text() if desc_elem else ""
+                    if job_link:
+                        extracted_jobs.append({"title": title, "link": job_link, "desc": desc})
+            
+            # မှတ်သားထားသော လင့်ခ်များအတိုင်း အလုပ်တစ်ခုချင်းစီ ဝင်ရောက်ခြင်း
+            for job in extracted_jobs:
+                try:
+                    title = job["title"]
+                    job_link = job["link"]
+                    description = job["desc"]
+                    jid = job_link.split("/")[-1]
                     
-                    if jid and (not self.redis or not self.redis.get(f"fl_bid:{jid}")):
+                    if not self.redis or not self.redis.get(f"fl_bid:{jid}"):
                         logger.info(f"🎯 Target Acquired: {title}")
-                        desc_elem = await job.query_selector(self.ui["job_desc"])
-                        description = await desc_elem.inner_text() if desc_elem else ""
                         
                         prompt = f"Project: {title}\nDesc: {description}\nWrite a strict technical proposal (max 400 chars). State you can start immediately. No greetings."
                         proposal = await self.get_ai_brain(prompt)
                         
                         if proposal:
                             logger.info("🧠 AI Proposal Generated. Navigating to project page...")
-                            await page.goto(f"https://www.freelancer.com{job_link}", wait_until="domcontentloaded")
-                            await asyncio.sleep(8)
+                            # စာမျက်နှာ အပြည့်အဝ ပွင့်သည်အထိ စောင့်ရန် 'networkidle' အသုံးပြုထားသည်
+                            await page.goto(f"https://www.freelancer.com{job_link}", wait_until="networkidle")
+                            await asyncio.sleep(5)
                             
-                            # Smart Selector - Proposal Box
+                            # ပြဿနာ ၂ ဖြေရှင်းခြင်း: Angular Form Control နာမည်များကိုပါ ထည့်သွင်းထားသည်
+                            box_selectors = [
+                                "textarea#description", 
+                                "textarea[formcontrolname='description']", 
+                                "textarea[name='description']",
+                                "app-bid-form textarea",
+                                "textarea" # နောက်ဆုံးအားထားရာ
+                            ]
+                            
                             box_found = False
-                            for sel in ["textarea#description", "textarea[name='description']", "textarea[placeholder*='proposal']"]:
-                                if await page.locator(sel).count() > 0:
-                                    await self.human_type(page.locator(sel).first, proposal)
+                            for sel in box_selectors:
+                                elements = page.locator(sel)
+                                if await elements.count() > 0 and await elements.first.is_visible():
+                                    await self.human_type(elements.first, proposal)
                                     box_found = True
                                     break
                             
@@ -171,34 +189,45 @@ class AutoIncomeGenerator:
                                 logger.warning(f"❌ Could not find Proposal Box for {title}")
                                 continue
 
-                            # Smart Selector - Bid Amount
-                            for sel in ["input#bid", "input[name='bidAmount']", "input[type='number']"]:
-                                if await page.locator(sel).count() > 0:
-                                    await page.locator(sel).first.fill(str(random.randint(20, 60)))
+                            # Bid Amount
+                            for sel in ["input#bid", "input[formcontrolname='bidAmount']", "input[name='bidAmount']"]:
+                                elements = page.locator(sel)
+                                if await elements.count() > 0 and await elements.first.is_visible():
+                                    await elements.first.fill(str(random.randint(20, 60)))
                                     break
 
-                            # Smart Selector - Delivery Days
-                            for sel in ["input#period", "input[name='period']"]:
-                                if await page.locator(sel).count() > 0:
-                                    await page.locator(sel).first.fill(str(random.randint(2, 4)))
+                            # Delivery Days
+                            for sel in ["input#period", "input[formcontrolname='period']", "input[name='period']"]:
+                                elements = page.locator(sel)
+                                if await elements.count() > 0 and await elements.first.is_visible():
+                                    await elements.first.fill(str(random.randint(2, 4)))
                                     break
 
-                            # Smart Selector - Place Bid Button (စာသားဖြင့် ရှာဖွေခြင်း)
-                            btn = page.locator("button", has_text="Place Bid").first
-                            if await btn.count() == 0:
-                                btn = page.locator("button", has_text="Submit Proposal").first
+                            # Submit Button
+                            btn_selectors = [
+                                "button.PlaceBid-btn",
+                                "button:has-text('Place Bid')",
+                                "button:has-text('Submit Proposal')",
+                                "app-bid-form button[type='submit']"
+                            ]
+                            btn_found = False
+                            for sel in btn_selectors:
+                                elements = page.locator(sel)
+                                if await elements.count() > 0 and await elements.first.is_visible():
+                                    await elements.first.click()
+                                    btn_found = True
+                                    break
                             
-                            if await btn.count() > 0:
-                                await btn.click()
+                            if btn_found:
                                 logger.info(f"✅ SUCCESS: Bid Placed for {title}!")
                                 if self.redis: self.redis.setex(f"fl_bid:{jid}", 604800, "done")
                                 await self.notify(f"🚀 <b>Bid Placed:</b> {title}")
                             else:
-                                logger.error("❌ Failed to find 'Place Bid' submit button.")
+                                logger.error(f"❌ Failed to find 'Place Bid' submit button for {title}.")
                     else:
-                        logger.info(f"⏭️ Skipped (Already bid or Invalid ID): {title}")
+                        logger.info(f"⏭️ Skipped (Already bid): {title}")
                 except Exception as e:
-                    logger.error(f"⚠️ Error on specific job: {e}")
+                    logger.error(f"⚠️ Error on specific job ({job['title']}): {e}")
         except Exception as e:
             logger.error(f"⚠️ Critical error in bidding phase: {e}")
 
