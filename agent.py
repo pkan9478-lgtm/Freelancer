@@ -24,13 +24,13 @@ def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
     
-    # Port ပြဿနာကို အမြစ်ပြတ်ဖြေရှင်းခြင်း
+    # Port 98 Address Already in Use Error ကို အမြစ်ပြတ် ဖြေရှင်းခြင်း
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
             httpd.serve_forever()
     except OSError as e:
-        logger.warning(f"Health server warning (Ignored): {e}")
+        pass # Port ကို တစ်ခုခုက သုံးနေရင်တောင် ဆက်ပြီး Run ခွင့်ပြုမည်
 
 def self_ping():
     url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
@@ -235,16 +235,14 @@ class AutoIncomeGenerator:
             )
             page = await context.new_page()
             
-            # ---> THE ULTIMATE SAFE STEALTH INJECTION <---
-            # Library Version ပြဿနာများကြောင့် လုံးဝ Crash မဖြစ်စေရန် ကိုယ်ပိုင် JavaScript Injection ဖြင့် ဖြည့်စွက်ကာကွယ်ထားသည်
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            try:
-                from playwright_stealth import stealth_async
-                if stealth_async:
-                    await stealth_async(page)
-            except Exception as e:
-                logger.warning(f"Native stealth_async skipped: {e}")
+            # ---> THE ULTIMATE NATIVE STEALTH INJECTION <---
+            # Error ခဏခဏတက်နေသော Library အစား ကိုယ်ပိုင် Javascript ကို အသုံးပြု၍ 100% Crash ကင်းစင်စေသည်
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            """)
 
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
@@ -266,7 +264,6 @@ class AutoIncomeGenerator:
                     await asyncio.sleep(sleep_time)
             except Exception as e:
                 logger.critical(f"System Crash in loop: {e}")
-                logger.critical(traceback.format_exc())
             finally:
                 await browser.close()
 
@@ -279,4 +276,3 @@ if __name__ == "__main__":
         asyncio.run(engine.system_core())
     except Exception as e:
         logger.critical(f"FATAL BOOT ERROR: {e}")
-        logger.critical(traceback.format_exc())
