@@ -15,13 +15,6 @@ from playwright.async_api import async_playwright
 from telegram import Bot
 from groq import AsyncGroq
 
-# [Safe & Correct Stealth Import for V2.0+]
-try:
-    from playwright_stealth import Stealth
-    USE_STEALTH = True
-except ImportError:
-    USE_STEALTH = False
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("PhoGo_Ultra_Gen")
 
@@ -31,12 +24,12 @@ def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
     
+    # Port ပြဿနာကို အမြစ်ပြတ်ဖြေရှင်းခြင်း
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
             httpd.serve_forever()
     except OSError as e:
-        # Port ပြဿနာတက်ခဲ့လျှင် Bot ရပ်မသွားစေရန် ကျော်ဖြတ်ခြင်း
         logger.warning(f"Health server warning (Ignored): {e}")
 
 def self_ping():
@@ -229,54 +222,53 @@ class AutoIncomeGenerator:
 
     async def system_core(self):
         async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=[
+                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
+                    "--js-flags=--max-old-space-size=256", "--disable-blink-features=AutomationControlled"
+                ]
+            )
+            context = await browser.new_context(
+                viewport={'width': 1366, 'height': 768},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
             
-            # ---> THE FINAL STEALTH FIX <---
-            # Stealth ကို "p" (Engine ကြီးတစ်ခုလုံး) အပေါ်သို့ လွှမ်းခြုံထားခြင်း
-            if USE_STEALTH:
-                stealth_context = Stealth().use_async(p)
-            else:
-                from contextlib import asynccontextmanager
-                @asynccontextmanager
-                async def dummy_context(): yield
-                stealth_context = dummy_context()
+            # ---> THE ULTIMATE SAFE STEALTH INJECTION <---
+            # Library Version ပြဿနာများကြောင့် လုံးဝ Crash မဖြစ်စေရန် ကိုယ်ပိုင် JavaScript Injection ဖြင့် ဖြည့်စွက်ကာကွယ်ထားသည်
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            try:
+                from playwright_stealth import stealth_async
+                if stealth_async:
+                    await stealth_async(page)
+            except Exception as e:
+                logger.warning(f"Native stealth_async skipped: {e}")
 
-            async with stealth_context:
-                browser = await p.chromium.launch(
-                    headless=True, 
-                    args=[
-                        "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
-                        "--js-flags=--max-old-space-size=256", "--disable-blink-features=AutomationControlled"
-                    ]
-                )
-                context = await browser.new_context(
-                    viewport={'width': 1366, 'height': 768},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
-                page = await context.new_page()
-                
-                async def block_resources(route):
-                    if route.request.resource_type in ["image", "font", "stylesheet"]:
-                        await route.abort()
-                    else:
-                        await route.continue_()
+            async def block_resources(route):
+                if route.request.resource_type in ["image", "font", "stylesheet"]:
+                    await route.abort()
+                else:
+                    await route.continue_()
 
-                await page.route("**/*", block_resources)
+            await page.route("**/*", block_resources)
 
-                try:
-                    await self.handle_login(page)
-                    while True:
-                        await self.execute_bidding(page)
-                        await self.handle_negotiations_and_delivery(page)
-                        gc.collect() 
-                        
-                        sleep_time = random.randint(1800, 3600)
-                        logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
-                        await asyncio.sleep(sleep_time)
-                except Exception as e:
-                    logger.critical(f"System Crash in loop: {e}")
-                    logger.critical(traceback.format_exc())
-                finally:
-                    await browser.close()
+            try:
+                await self.handle_login(page)
+                while True:
+                    await self.execute_bidding(page)
+                    await self.handle_negotiations_and_delivery(page)
+                    gc.collect() 
+                    
+                    sleep_time = random.randint(1800, 3600)
+                    logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
+                    await asyncio.sleep(sleep_time)
+            except Exception as e:
+                logger.critical(f"System Crash in loop: {e}")
+                logger.critical(traceback.format_exc())
+            finally:
+                await browser.close()
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
