@@ -24,13 +24,12 @@ def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
     
-    # Port 98 Address Already in Use Error ကို အမြစ်ပြတ် ဖြေရှင်းခြင်း
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
             httpd.serve_forever()
-    except OSError as e:
-        pass # Port ကို တစ်ခုခုက သုံးနေရင်တောင် ဆက်ပြီး Run ခွင့်ပြုမည်
+    except OSError:
+        pass 
 
 def self_ping():
     url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
@@ -63,9 +62,6 @@ class AutoIncomeGenerator:
             "job_card": ".JobSearchCard-item",
             "job_title": ".JobSearchCard-primary-heading a",
             "job_desc": ".JobSearchCard-primary-description",
-            "proposal_box": "textarea#description", 
-            "amount_field": "input#bid",
-            "days_field": "input#period",
             "chat_threads": "fl-message-thread-item",
             "chat_messages": "fl-message-bubble-text",
             "message_box": "textarea[placeholder*='Type a message']",
@@ -131,6 +127,81 @@ class AutoIncomeGenerator:
             self.redis.set("freelancer_session_cookies", json.dumps(cookies))
         return True
 
+    # ---> အဆင့်မြှင့်တင်ထားသော Smart Bidding Engine <---
+    async def execute_bidding(self, page):
+        logger.info(">>> STARTING BIDDING PHASE <<<")
+        try:
+            await page.goto("https://www.freelancer.com/search/projects?q=python%20react%20automation%20bot", wait_until="domcontentloaded")
+            await asyncio.sleep(5)
+            
+            jobs = await page.query_selector_all(self.ui["job_card"])
+            logger.info(f"🔍 Found {len(jobs)} potential jobs.")
+            
+            for job in jobs[:2]:
+                try:
+                    title_elem = await job.query_selector(self.ui["job_title"])
+                    if not title_elem: continue
+                    
+                    title = await title_elem.inner_text()
+                    job_link = await title_elem.get_attribute("href")
+                    jid = job_link.split("/")[-1] if job_link else None
+                    
+                    if jid and (not self.redis or not self.redis.get(f"fl_bid:{jid}")):
+                        logger.info(f"🎯 Target Acquired: {title}")
+                        desc_elem = await job.query_selector(self.ui["job_desc"])
+                        description = await desc_elem.inner_text() if desc_elem else ""
+                        
+                        prompt = f"Project: {title}\nDesc: {description}\nWrite a strict technical proposal (max 400 chars). State you can start immediately. No greetings."
+                        proposal = await self.get_ai_brain(prompt)
+                        
+                        if proposal:
+                            logger.info("🧠 AI Proposal Generated. Navigating to project page...")
+                            await page.goto(f"https://www.freelancer.com{job_link}", wait_until="domcontentloaded")
+                            await asyncio.sleep(8)
+                            
+                            # Smart Selector - Proposal Box
+                            box_found = False
+                            for sel in ["textarea#description", "textarea[name='description']", "textarea[placeholder*='proposal']"]:
+                                if await page.locator(sel).count() > 0:
+                                    await self.human_type(page.locator(sel).first, proposal)
+                                    box_found = True
+                                    break
+                            
+                            if not box_found:
+                                logger.warning(f"❌ Could not find Proposal Box for {title}")
+                                continue
+
+                            # Smart Selector - Bid Amount
+                            for sel in ["input#bid", "input[name='bidAmount']", "input[type='number']"]:
+                                if await page.locator(sel).count() > 0:
+                                    await page.locator(sel).first.fill(str(random.randint(20, 60)))
+                                    break
+
+                            # Smart Selector - Delivery Days
+                            for sel in ["input#period", "input[name='period']"]:
+                                if await page.locator(sel).count() > 0:
+                                    await page.locator(sel).first.fill(str(random.randint(2, 4)))
+                                    break
+
+                            # Smart Selector - Place Bid Button (စာသားဖြင့် ရှာဖွေခြင်း)
+                            btn = page.locator("button", has_text="Place Bid").first
+                            if await btn.count() == 0:
+                                btn = page.locator("button", has_text="Submit Proposal").first
+                            
+                            if await btn.count() > 0:
+                                await btn.click()
+                                logger.info(f"✅ SUCCESS: Bid Placed for {title}!")
+                                if self.redis: self.redis.setex(f"fl_bid:{jid}", 604800, "done")
+                                await self.notify(f"🚀 <b>Bid Placed:</b> {title}")
+                            else:
+                                logger.error("❌ Failed to find 'Place Bid' submit button.")
+                    else:
+                        logger.info(f"⏭️ Skipped (Already bid or Invalid ID): {title}")
+                except Exception as e:
+                    logger.error(f"⚠️ Error on specific job: {e}")
+        except Exception as e:
+            logger.error(f"⚠️ Critical error in bidding phase: {e}")
+
     async def handle_negotiations_and_delivery(self, page):
         logger.info("Scanning Inbox for Negotiations and Projects...")
         await page.goto("https://www.freelancer.com/messages", wait_until="domcontentloaded")
@@ -181,45 +252,6 @@ class AutoIncomeGenerator:
                         del memory_file
                         await self.notify("✅ <b>Mission Accomplished!</b> Code Delivered & Milestone Release Requested.")
 
-    async def execute_bidding(self, page):
-        await page.goto("https://www.freelancer.com/search/projects?q=python%20react%20automation%20bot", wait_until="domcontentloaded")
-        await asyncio.sleep(5)
-        
-        jobs = await page.query_selector_all(self.ui["job_card"])
-        for job in jobs[:2]:
-            try:
-                title_elem = await job.query_selector(self.ui["job_title"])
-                if not title_elem: continue
-                
-                title = await title_elem.inner_text()
-                job_link = await title_elem.get_attribute("href")
-                jid = job_link.split("/")[-1] if job_link else None
-                
-                if jid and (not self.redis or not self.redis.get(f"fl_bid:{jid}")):
-                    desc_elem = await job.query_selector(self.ui["job_desc"])
-                    description = await desc_elem.inner_text() if desc_elem else ""
-                    
-                    prompt = f"Project: {title}\nDesc: {description}\nWrite a strict technical proposal (max 400 chars). State you can start immediately. No greetings."
-                    proposal = await self.get_ai_brain(prompt)
-                    
-                    if proposal:
-                        await page.goto(f"https://www.freelancer.com{job_link}", wait_until="domcontentloaded")
-                        await asyncio.sleep(7)
-                        
-                        if await page.query_selector(self.ui["proposal_box"]):
-                            await self.human_type(page.locator(self.ui["proposal_box"]), proposal)
-                            
-                            bid_amount = str(random.randint(20, 60))
-                            await page.fill(self.ui["amount_field"], bid_amount)
-                            await page.fill(self.ui["days_field"], str(random.randint(2, 4)))
-                            
-                            await page.click("button.PlaceBid-btn") 
-                            
-                            if self.redis: self.redis.setex(f"fl_bid:{jid}", 604800, "done")
-                            await self.notify(f"🚀 <b>Bid Placed:</b> {title} | Amount: ${bid_amount}")
-            except Exception as e:
-                pass
-
     async def system_core(self):
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -235,8 +267,6 @@ class AutoIncomeGenerator:
             )
             page = await context.new_page()
             
-            # ---> THE ULTIMATE NATIVE STEALTH INJECTION <---
-            # Error ခဏခဏတက်နေသော Library အစား ကိုယ်ပိုင် Javascript ကို အသုံးပြု၍ 100% Crash ကင်းစင်စေသည်
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 window.chrome = { runtime: {} };
