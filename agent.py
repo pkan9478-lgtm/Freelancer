@@ -194,7 +194,7 @@ class AutoIncomeGenerator:
                             await page.fill(self.ui["amount_field"], bid_amount)
                             await page.fill(self.ui["days_field"], str(random.randint(2, 4)))
                             
-                            # ဤနေရာတွင် Bidding ခလုတ်ကို အသက်သွင်းလိုက်ပါပြီ (Toggled ON)
+                            # တကယ် Bidding စတင်ရန် ခလုတ်ကို ဖွင့်ထားပါသည်
                             await page.click("button.PlaceBid-btn") 
                             
                             self.redis.setex(f"fl_bid:{jid}", 604800, "done")
@@ -218,11 +218,12 @@ class AutoIncomeGenerator:
             page = await context.new_page()
             await stealth_async(page)
             
+            # --- ဤနေရာကို အမြစ်ပြတ် ဖြေရှင်းပြီးပါပြီ ---
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
                     await route.abort()
                 else:
-                    await route.continue()
+                    await route.continue_()  # <--- FIXED: added underscore
 
             await page.route("**/*", block_resources)
 
