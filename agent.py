@@ -11,7 +11,7 @@ import socketserver
 import requests
 from datetime import datetime
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth # <--- Version အသစ်အရ Stealth ကိုသာ Import လုပ်ပါသည်
 from telegram import Bot
 from groq import AsyncGroq
 
@@ -194,7 +194,6 @@ class AutoIncomeGenerator:
                             await page.fill(self.ui["amount_field"], bid_amount)
                             await page.fill(self.ui["days_field"], str(random.randint(2, 4)))
                             
-                            # တကယ် Bidding စတင်ရန် ခလုတ်ကို ဖွင့်ထားပါသည်
                             await page.click("button.PlaceBid-btn") 
                             
                             self.redis.setex(f"fl_bid:{jid}", 604800, "done")
@@ -203,7 +202,8 @@ class AutoIncomeGenerator:
                 pass
 
     async def system_core(self):
-        async with async_playwright() as p:
+        # --- ပြင်ဆင်ထားသည်: Version အသစ် Stealth API ကို သုံးထားသည် ---
+        async with Stealth().use_async(async_playwright()) as p:
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
@@ -216,14 +216,12 @@ class AutoIncomeGenerator:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
-            await stealth_async(page)
             
-            # --- ဤနေရာကို အမြစ်ပြတ် ဖြေရှင်းပြီးပါပြီ ---
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
                     await route.abort()
                 else:
-                    await route.continue_()  # <--- FIXED: added underscore
+                    await route.continue_()
 
             await page.route("**/*", block_resources)
 
