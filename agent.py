@@ -20,12 +20,17 @@ logger = logging.getLogger("PhoGo_Ultra_Gen")
 
 PORT = int(os.environ.get("PORT", 10000))
 
-# [Safe Stealth Import]
+# [Safe & Universal Stealth Import]
 try:
     from playwright_stealth import stealth_async
 except ImportError:
-    stealth_async = None
-    logger.warning("Playwright Stealth library not fully loaded, using standard headless mode.")
+    try:
+        from playwright_stealth import Stealth
+        async def stealth_async(page):
+            await Stealth().use_async(page)
+    except ImportError:
+        stealth_async = None
+        logger.warning("Playwright Stealth library not fully loaded, using standard headless mode.")
 
 def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
