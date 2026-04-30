@@ -20,23 +20,32 @@ logger = logging.getLogger("PhoGo_Ultra_Gen")
 
 PORT = int(os.environ.get("PORT", 10000))
 
-# [Safe & Universal Stealth Import]
+# [Safe & Correct Stealth Import]
 try:
     from playwright_stealth import stealth_async
 except ImportError:
     try:
         from playwright_stealth import Stealth
         async def stealth_async(page):
-            await Stealth().use_async(page)
-    except ImportError:
+            # Version အသစ်၏ Async Context Manager ကို မှန်ကန်စွာ Handle လုပ်ခြင်း
+            async with Stealth().use_async(page):
+                pass
+    except Exception as e:
         stealth_async = None
-        logger.warning("Playwright Stealth library not fully loaded, using standard headless mode.")
+        logger.warning(f"Playwright Stealth library issue: {e}. Using standard headless mode.")
 
 def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args): pass
-    with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
-        httpd.serve_forever()
+    
+    # ဤနေရာတွင် Port Address Already in Use Error ကို အမြစ်ပြတ် ဖြေရှင်းထားပါသည်
+    socketserver.TCPServer.allow_reuse_address = True
+    
+    try:
+        with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
+            httpd.serve_forever()
+    except Exception as e:
+        logger.warning(f"Health server warning: {e}")
 
 def self_ping():
     url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
@@ -57,7 +66,6 @@ class AutoIncomeGenerator:
         self.redis = redis.from_url(self.redis_url, decode_responses=True) if self.redis_url else None
         self.bot = Bot(token=self.bot_token) if self.bot_token else None
         
-        # Safe Groq initialization
         if self.groq_key:
             self.groq_client = AsyncGroq(api_key=self.groq_key)
         else:
@@ -86,7 +94,6 @@ class AutoIncomeGenerator:
             try: await self.bot.send_message(self.user_id, msg, parse_mode='HTML')
             except: pass
 
-    # ---> ပြင်ဆင်ထားသောနေရာ: Groq ရဲ့ အသစ်ဆုံး Model ကို ပြောင်းလဲအသုံးပြုထားသည် <---
     async def get_ai_brain(self, prompt, model="llama-3.3-70b-versatile"):
         if not self.groq_client: return None
         try:
