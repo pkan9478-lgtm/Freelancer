@@ -2,7 +2,7 @@ services:
   - type: web
     name: auto-income-generator
     env: docker
-    region: singapore 
+    region: singapore
     plan: free
     healthCheckPath: /
     envVars:
@@ -19,4 +19,6 @@ services:
       - key: TELEGRAM_USER_ID
         sync: false
       - key: POE_PB_COOKIE
+        sync: false
+      - key: POE_PLAT_COOKIE
         sync: false
