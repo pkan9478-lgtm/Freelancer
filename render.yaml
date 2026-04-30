@@ -20,5 +20,5 @@ services:
         sync: false
       - key: POE_PB_COOKIE
         sync: false
-      - key: POE_PLAT_COOKIE
+      - key: POE_PLAT_COOKIE # m-lat cookie အတွက် Key အသစ်
         sync: false
