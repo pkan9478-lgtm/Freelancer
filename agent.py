@@ -9,9 +9,9 @@ import threading
 import http.server
 import socketserver
 import requests
+import traceback
 from datetime import datetime
 from playwright.async_api import async_playwright
-from playwright_stealth import Stealth # <--- Version အသစ်အရ Stealth ကိုသာ Import လုပ်ပါသည်
 from telegram import Bot
 from groq import AsyncGroq
 
@@ -19,6 +19,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("PhoGo_Ultra_Gen")
 
 PORT = int(os.environ.get("PORT", 10000))
+
+# [Safe Stealth Import] Error တက်ခဲ့လျှင် Bot ရပ်မသွားစေရန် ကာကွယ်ထားသည်
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    stealth_async = None
+    logger.warning("Playwright Stealth library not fully loaded, using standard headless mode.")
 
 def run_health_server():
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -37,11 +44,22 @@ def self_ping():
 
 class AutoIncomeGenerator:
     def __init__(self):
-        self.redis = redis.from_url(os.getenv("REDIS_URL"), decode_responses=True)
-        self.bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+        # Prevent Crash if environment variables are missing
+        self.redis_url = os.getenv("REDIS_URL")
+        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.user_id = os.getenv("TELEGRAM_USER_ID")
-        self.groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        self.groq_key = os.getenv("GROQ_API_KEY")
         
+        self.redis = redis.from_url(self.redis_url, decode_responses=True) if self.redis_url else None
+        self.bot = Bot(token=self.bot_token) if self.bot_token else None
+        
+        # Safe Groq initialization
+        if self.groq_key:
+            self.groq_client = AsyncGroq(api_key=self.groq_key)
+        else:
+            self.groq_client = None
+            logger.error("CRITICAL ERROR: GROQ_API_KEY is missing in Render Environment Variables!")
+
         self.ui = {
             "login_email": "input[type='email']",
             "login_pass": "input[type='password']",
@@ -60,10 +78,12 @@ class AutoIncomeGenerator:
         }
 
     async def notify(self, msg):
-        try: await self.bot.send_message(self.user_id, msg, parse_mode='HTML')
-        except: pass
+        if self.bot and self.user_id:
+            try: await self.bot.send_message(self.user_id, msg, parse_mode='HTML')
+            except: pass
 
     async def get_ai_brain(self, prompt, model="llama3-70b-8192"):
+        if not self.groq_client: return None
         try:
             chat_completion = await self.groq_client.chat.completions.create(
                 messages=[
@@ -92,13 +112,14 @@ class AutoIncomeGenerator:
         await element.type(text, delay=random.randint(30, 70))
 
     async def handle_login(self, page):
-        cookie_data = self.redis.get("freelancer_session_cookies")
-        if cookie_data:
-            try:
-                await page.context.add_cookies(json.loads(cookie_data))
-                await page.goto("https://www.freelancer.com/dashboard")
-                if "dashboard" in page.url: return True
-            except: pass
+        if self.redis:
+            cookie_data = self.redis.get("freelancer_session_cookies")
+            if cookie_data:
+                try:
+                    await page.context.add_cookies(json.loads(cookie_data))
+                    await page.goto("https://www.freelancer.com/dashboard")
+                    if "dashboard" in page.url: return True
+                except: pass
 
         logger.info("Auto-Login initiated...")
         await page.goto("https://www.freelancer.com/login")
@@ -109,7 +130,8 @@ class AutoIncomeGenerator:
         await asyncio.sleep(15) 
         
         cookies = await page.context.cookies()
-        self.redis.set("freelancer_session_cookies", json.dumps(cookies))
+        if self.redis:
+            self.redis.set("freelancer_session_cookies", json.dumps(cookies))
         return True
 
     async def handle_negotiations_and_delivery(self, page):
@@ -129,7 +151,7 @@ class AutoIncomeGenerator:
             last_msg = chat_history[-1]
             chat_id = str(hash(last_msg))
             
-            if self.redis.get(f"replied:{chat_id}"): continue
+            if self.redis and self.redis.get(f"replied:{chat_id}"): continue
 
             is_funded = await page.query_selector(self.ui["milestone_badge"]) is not None
 
@@ -139,10 +161,10 @@ class AutoIncomeGenerator:
                 if reply_text:
                     await self.human_type(page.locator(self.ui["message_box"]), reply_text)
                     await page.click(self.ui["send_msg_btn"])
-                    self.redis.setex(f"replied:{chat_id}", 86400, "done")
+                    if self.redis: self.redis.setex(f"replied:{chat_id}", 86400, "done")
                     await self.notify(f"💬 <b>Auto-Replied:</b> {reply_text}")
             else:
-                if not self.redis.get(f"delivered_code:{chat_id}"):
+                if self.redis and not self.redis.get(f"delivered_code:{chat_id}"):
                     await self.notify("💰 <b>Milestone Funded!</b> Commencing Auto-Delivery...")
                     await asyncio.sleep(random.randint(300, 600)) 
                     
@@ -158,7 +180,7 @@ class AutoIncomeGenerator:
                         await self.human_type(page.locator(self.ui["message_box"]), delivery_msg)
                         await page.click(self.ui["send_msg_btn"])
                         
-                        self.redis.setex(f"delivered_code:{chat_id}", 2592000, "done")
+                        if self.redis: self.redis.setex(f"delivered_code:{chat_id}", 2592000, "done")
                         del memory_file
                         await self.notify("✅ <b>Mission Accomplished!</b> Code Delivered & Milestone Release Requested.")
 
@@ -176,7 +198,7 @@ class AutoIncomeGenerator:
                 job_link = await title_elem.get_attribute("href")
                 jid = job_link.split("/")[-1] if job_link else None
                 
-                if jid and not self.redis.get(f"fl_bid:{jid}"):
+                if jid and (not self.redis or not self.redis.get(f"fl_bid:{jid}")):
                     desc_elem = await job.query_selector(self.ui["job_desc"])
                     description = await desc_elem.inner_text() if desc_elem else ""
                     
@@ -196,14 +218,13 @@ class AutoIncomeGenerator:
                             
                             await page.click("button.PlaceBid-btn") 
                             
-                            self.redis.setex(f"fl_bid:{jid}", 604800, "done")
+                            if self.redis: self.redis.setex(f"fl_bid:{jid}", 604800, "done")
                             await self.notify(f"🚀 <b>Bid Placed:</b> {title} | Amount: ${bid_amount}")
             except Exception as e:
                 pass
 
     async def system_core(self):
-        # --- ပြင်ဆင်ထားသည်: Version အသစ် Stealth API ကို သုံးထားသည် ---
-        async with Stealth().use_async(async_playwright()) as p:
+        async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True, 
                 args=[
@@ -216,6 +237,10 @@ class AutoIncomeGenerator:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
+            
+            # Safe Stealth Execution
+            if stealth_async:
+                await stealth_async(page)
             
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
@@ -236,13 +261,19 @@ class AutoIncomeGenerator:
                     logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
                     await asyncio.sleep(sleep_time)
             except Exception as e:
-                logger.critical(f"System Crash: {e}")
-                await self.notify(f"🚨 <b>Critical Error:</b> {str(e)[:150]}")
+                logger.critical(f"System Crash in loop: {e}")
+                logger.critical(traceback.format_exc())
             finally:
                 await browser.close()
 
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()
-    engine = AutoIncomeGenerator()
-    asyncio.run(engine.system_core())
+    
+    # ပြင်ပ Error အားလုံးကို ဖမ်းယူပြီး Log ထုတ်ပေးမည့်နေရာ
+    try:
+        engine = AutoIncomeGenerator()
+        asyncio.run(engine.system_core())
+    except Exception as e:
+        logger.critical(f"FATAL BOOT ERROR: {e}")
+        logger.critical(traceback.format_exc())
