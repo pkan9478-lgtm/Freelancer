@@ -41,7 +41,7 @@ class AutoIncomeGenerator:
             "amount_field": "input#bid",
             "days_field": "input#period",
             "chat_threads": "fl-message-thread-item",
-            "chat_messages": "fl-message-bubble-text",
+            "chat_messages": ".fl-message-bubble-text",
             "message_box": "textarea[placeholder*='Type a message']",
             "file_upload": "input[type='file']",
             "send_msg_btn": "button[data-color='secondary']",
@@ -53,7 +53,7 @@ class AutoIncomeGenerator:
         except: pass
 
     async def get_ai_brain(self, prompt, model="Claude-3.5-Sonnet"):
-        """အဆင့်မြင့် POE_PLAT_COOKIE ကို အသုံးပြုထားသော AI Engine"""
+        """PB နှင့် PLAT Cookie နှစ်ခုလုံးသုံး၍ AI ဆီမှ အဖြေထုတ်ယူခြင်း"""
         try:
             tokens = {
                 'p-b': os.getenv("POE_PB_COOKIE"),
@@ -92,7 +92,7 @@ class AutoIncomeGenerator:
 
     async def handle_negotiations_and_delivery(self, page):
         """Negotiation နှင့် Auto-Delivery အပိုင်း"""
-        logger.info("Scanning Inbox...")
+        logger.info("Scanning Inbox for Transactions...")
         await page.goto("https://www.freelancer.com/messages", wait_until="domcontentloaded")
         await asyncio.sleep(8)
         threads = await page.query_selector_all(self.ui["chat_threads"])
@@ -113,16 +113,16 @@ class AutoIncomeGenerator:
 
             if is_funded:
                 # AUTO-DELIVERY PHASE
-                prompt = f"Based on: {history}, write only the final Python code solution."
+                prompt = f"Based on this project history: {history}, generate the production Python code."
                 code = await self.get_ai_brain(prompt)
                 if code:
-                    await self.notify("💰 <b>Milestone Funded!</b> Sending Solution...")
-                    await self.human_type(page.locator(self.ui["message_box"]), "I've finished the task. Code attached.")
+                    await self.notify("💰 <b>Milestone Funded!</b> Delivering Code...")
+                    await self.human_type(page.locator(self.ui["message_box"]), "Completed. Solution attached.")
                     await page.click(self.ui["send_msg_btn"])
                     self.redis.setex(f"done:{chat_id}", 2592000, "delivered")
             else:
                 # NEGOTIATION PHASE
-                prompt = f"Client said: '{last_msg}'. Reply to get the award."
+                prompt = f"Client sent: '{last_msg}'. Reply professionally as Pho Go to close the deal."
                 reply = await self.get_ai_brain(prompt)
                 if reply:
                     await self.human_type(page.locator(self.ui["message_box"]), reply)
@@ -140,7 +140,8 @@ class AutoIncomeGenerator:
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
                     await route.abort()
-                else: await route.continue()
+                else: 
+                    await route.continue()
 
             await page.route("**/*", block_resources)
 
@@ -149,7 +150,7 @@ class AutoIncomeGenerator:
                 while True:
                     await self.handle_negotiations_and_delivery(page)
                     gc.collect()
-                    logger.info("Cycle completed. Sleeping...")
+                    logger.info("Cycle completed. Memory cleared. Sleeping...")
                     await asyncio.sleep(random.randint(1800, 3600))
             except Exception as e:
                 logger.error(f"Critical Error: {e}")
@@ -159,4 +160,5 @@ class AutoIncomeGenerator:
 if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()
-    asyncio.run(AutoIncomeGenerator().run_core())
+    engine = AutoIncomeGenerator()
+    asyncio.run(engine.run_core())
