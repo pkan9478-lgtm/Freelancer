@@ -25,12 +25,6 @@ class AutoIncomeGenerator:
         self.ui = {
             "login_email": "input[type='email']",
             "login_pass": "input[type='password']",
-            "job_card": ".JobSearchCard-item",
-            "job_title": ".JobSearchCard-primary-heading a",
-            "job_desc": ".JobSearchCard-primary-description",
-            "proposal_box": "textarea#description",
-            "amount_field": "input#bid",
-            "days_field": "input#period",
             "chat_threads": "fl-message-thread-item",
             "chat_messages": ".fl-message-bubble-text",
             "message_box": "textarea[placeholder*='Type a message']",
@@ -43,7 +37,7 @@ class AutoIncomeGenerator:
         except: pass
 
     async def get_ai_brain(self, prompt, model="Claude-3.5-Sonnet"):
-        """PB နှင့် PLAT Cookie နှစ်ခုလုံး သုံးထားသည်"""
+        """PB နှင့် PLAT Cookie နှစ်ခုလုံးကို အသုံးပြုထားသည်"""
         try:
             tokens = {
                 'p-b': os.getenv("POE_PB_COOKIE"),
@@ -62,9 +56,9 @@ class AutoIncomeGenerator:
         await element.fill("")
         await element.type(text, delay=random.randint(30, 70))
 
-    async def autonomous_execution(self, page):
+    async def handle_negotiations_and_delivery(self, page):
         """Negotiation နှင့် Auto-Delivery logic"""
-        logger.info("Scanning Inbox for Negotiations and Active Projects...")
+        logger.info("Scanning Inbox for Negotiations...")
         await page.goto("https://www.freelancer.com/messages", wait_until="domcontentloaded")
         await asyncio.sleep(8)
         threads = await page.query_selector_all(self.ui["chat_threads"])
@@ -84,17 +78,17 @@ class AutoIncomeGenerator:
             is_funded = await page.query_selector(self.ui["milestone_badge"]) is not None
 
             if is_funded:
-                # AUTO-DELIVERY PHASE
-                prompt = f"Based on: {history}, write only the production Python code solution."
+                # AUTO-DELIVERY
+                prompt = f"Based on: {history}, write the production Python code solution."
                 code = await self.get_ai_brain(prompt)
                 if code:
-                    await self.notify("💰 <b>Milestone Funded!</b> Delivering Project...")
-                    await self.human_type(page.locator(self.ui["message_box"]), "I have finished the task. Code attached.")
+                    await self.notify("💰 <b>Milestone Funded!</b> Delivering Code...")
+                    await self.human_type(page.locator(self.ui["message_box"]), "Completed. Solution attached.")
                     await page.click(self.ui["send_msg_btn"])
                     self.redis.setex(f"done:{chat_id}", 2592000, "delivered")
             else:
-                # NEGOTIATION PHASE
-                prompt = f"Client said: '{last_msg}'. Reply professionally as Pho Go to get hired."
+                # NEGOTIATION
+                prompt = f"Client: '{last_msg}'. Reply to close the deal as Pho Go."
                 reply = await self.get_ai_brain(prompt)
                 if reply:
                     await self.human_type(page.locator(self.ui["message_box"]), reply)
@@ -107,7 +101,7 @@ class AutoIncomeGenerator:
             page = await browser.new_page()
             await stealth_async(page)
             
-            # Syntax Corrected Resource Blocker
+            # Syntax Fixed: Async Resource Blocker
             async def block_resources(route):
                 if route.request.resource_type in ["image", "font", "stylesheet"]:
                     await route.abort()
@@ -126,11 +120,10 @@ class AutoIncomeGenerator:
 
             while True:
                 try:
-                    await self.autonomous_execution(page)
+                    await self.handle_negotiations_and_delivery(page)
                     gc.collect()
                 except Exception as e:
-                    logger.error(f"Loop Error: {e}")
-                
+                    logger.error(f"Cycle Error: {e}")
                 await asyncio.sleep(random.randint(1200, 2400))
 
 if __name__ == "__main__":
