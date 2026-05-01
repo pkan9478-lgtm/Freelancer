@@ -1,336 +1,389 @@
 import os
-import json
 import asyncio
-import random
 import logging
-import redis
+import json
+import tempfile
+import zipfile
+import shutil
+import re
 import gc
-import threading
-import http.server
-import socketserver
-import requests
-import traceback
+import aiosqlite
 from datetime import datetime
-from playwright.async_api import async_playwright
-from telegram import Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram.constants import ChatAction
+from telegram.ext import (
+    ApplicationBuilder, 
+    CommandHandler, 
+    MessageHandler, 
+    filters, 
+    ContextTypes, 
+    CallbackQueryHandler,
+    Application
+)
 from groq import AsyncGroq
+from dotenv import load_dotenv
+import redis.asyncio as aioredis # Added Redis
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PhoGo_Ultra_Gen")
+# ==========================================
+# 1. Setup & Configurations
+# ==========================================
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ADMIN_ID = os.getenv("ADMIN_ID")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-PORT = int(os.environ.get("PORT", 10000))
+if not TELEGRAM_TOKEN or not GROQ_API_KEY or not ADMIN_ID:
+    print("❌ Error: API Keys or ADMIN_ID missing in .env file.")
+    exit()
 
-def run_health_server():
-    class QuietHandler(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, format, *args): pass
-    socketserver.TCPServer.allow_reuse_address = True
-    try:
-        with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
-            httpd.serve_forever()
-    except OSError:
-        pass 
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-def self_ping():
-    url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
-    import time
-    time.sleep(60)
-    while True:
-        try: requests.get(url, timeout=10)
-        except: pass
-        time.sleep(300)
+# Save DB in a persistent directory
+os.makedirs('data', exist_ok=True)
+DB_NAME = 'data/phogo_ultra_master.db' 
+ADMIN_FILTER = filters.User(user_id=int(ADMIN_ID))
 
-class AutoIncomeGenerator:
+FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768"
+]
+
+# Redis Client Setup (Replaces in-memory admin_states)
+redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+# ==========================================
+# 2. Optimized Database Setup
+# ==========================================
+async def init_db(app: Application):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('PRAGMA journal_mode=WAL;')
+        await db.execute('''CREATE TABLE IF NOT EXISTS job_history
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER, 
+                      job_desc TEXT, 
+                      project_plan TEXT,
+                      proposal TEXT, 
+                      price INTEGER, 
+                      timeline TEXT, 
+                      tech_stack TEXT, 
+                      generated_code TEXT, 
+                      status TEXT DEFAULT '1. Requirements Gathering',
+                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        await db.commit()
+    logger.info("✅ Database & Redis Initialized (Memory Optimized)!")
+
+# ==========================================
+# 3. AI Assistant Class (Robust Rate Limit)
+# ==========================================
+class PhoGoUltraAssistant:
     def __init__(self):
-        self.redis_url = os.getenv("REDIS_URL")
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.user_id = os.getenv("TELEGRAM_USER_ID")
-        self.groq_key = os.getenv("GROQ_API_KEY")
+        self.groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+        self.semaphore = asyncio.Semaphore(1) 
+
+    async def get_ai_response(self, prompt, system_msg, response_format=None):
+        messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
         
-        self.redis = redis.from_url(self.redis_url, decode_responses=True) if self.redis_url else None
-        self.bot = Bot(token=self.bot_token) if self.bot_token else None
-        
-        if self.groq_key:
-            self.groq_client = AsyncGroq(api_key=self.groq_key)
-        else:
-            self.groq_client = None
-            logger.error("CRITICAL ERROR: GROQ_API_KEY is missing!")
+        async with self.semaphore:
+            for model_name in FALLBACK_MODELS:
+                backoff_time = 2
+                for attempt in range(3): 
+                    try:
+                        kwargs = {"messages": messages, "model": model_name, "temperature": 0.4}
+                        if response_format:
+                            kwargs["response_format"] = {"type": "json_object"}
 
-        self.ui = {
-            "login_email": "input[type='email']",
-            "login_pass": "input[type='password']",
-            "job_card": ".JobSearchCard-item",
-            "job_title": ".JobSearchCard-primary-heading a",
-            "job_desc": ".JobSearchCard-primary-description",
-            "chat_threads": "fl-message-thread-item",
-            "chat_messages": "fl-message-bubble-text",
-            "message_box": "textarea[placeholder*='Type a message']",
-            "file_upload": "input[type='file']",
-            "send_msg_btn": "button[data-color='secondary']",
-            "milestone_badge": ".Milestone-badge--funded"
-        }
-
-    async def notify(self, msg):
-        if self.bot and self.user_id:
-            try: await self.bot.send_message(self.user_id, msg, parse_mode='HTML')
-            except: pass
-
-    async def get_ai_brain(self, prompt, model="llama-3.3-70b-versatile"):
-        if not self.groq_client: return None
-        try:
-            chat_completion = await self.groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": "You are Pho Go, a professional Software Architect. Reply highly technical and direct without robotic greetings."},
-                    {"role": "user", "content": prompt}
-                ],
-                model=model,
-                temperature=0.7,
-                max_tokens=2048,
-            )
-            return chat_completion.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Groq AI Engine Error: {e}")
+                        completion = await self.groq_client.chat.completions.create(**kwargs)
+                        result = completion.choices[0].message.content
+                        
+                        # Free up memory explicitly
+                        del completion
+                        gc.collect() 
+                        return result
+                    
+                    except Exception as e:
+                        logger.warning(f"⚠️ Groq API Error ({model_name} - Attempt {attempt + 1}): {e}")
+                        if "rate_limit" in str(e).lower() or "429" in str(e):
+                            await asyncio.sleep(backoff_time)
+                            backoff_time *= 2 
+                        else:
+                            await asyncio.sleep(2)
+                            break 
             return None
 
-    def extract_code_to_buffer(self, ai_output, file_prefix):
-        data = ai_output
-        if "```" in ai_output:
-            parts = ai_output.split("```")
-            if len(parts) > 1: data = parts[1].split("\n", 1)[-1] 
-        file_name = f"{file_prefix}_{int(datetime.now().timestamp())}.py"
-        return {"name": file_name, "mimeType": "text/x-python", "buffer": data.strip().encode('utf-8')}
-
-    async def human_type(self, element, text):
-        await element.fill("")
-        await element.type(text, delay=random.randint(30, 70))
-
-    async def handle_login(self, page):
-        if self.redis:
-            cookie_data = self.redis.get("freelancer_session_cookies")
-            if cookie_data:
-                try:
-                    await page.context.add_cookies(json.loads(cookie_data))
-                    await page.goto("https://www.freelancer.com/dashboard")
-                    if "dashboard" in page.url: return True
-                except: pass
-
-        logger.info("Auto-Login initiated...")
-        await page.goto("https://www.freelancer.com/login")
-        await asyncio.sleep(3)
-        await self.human_type(page.locator(self.ui["login_email"]), os.getenv("FL_EMAIL"))
-        await self.human_type(page.locator(self.ui["login_pass"]), os.getenv("FL_PASSWORD"))
-        await page.click("button[type='submit']")
-        await asyncio.sleep(15) 
-        
-        # Screenshot ရိုက်၍ Login အောင်မြင်/မမြင် စစ်ဆေးခြင်း
-        await page.screenshot(path="login_status.png", full_page=True)
-        logger.info("📸 Saved login status screenshot.")
-        
-        cookies = await page.context.cookies()
-        if self.redis:
-            self.redis.set("freelancer_session_cookies", json.dumps(cookies))
-        return True
-
-    async def execute_bidding(self, page):
-        logger.info(">>> STARTING BIDDING PHASE <<<")
+    async def analyze_and_plan_job(self, job_desc):
+        sys_msg = (
+            "You are a Senior Solutions Architect. Analyze the job and output ONLY valid JSON. "
+            "Keys needed: 'proposal', 'price' (int, USD), 'timeline', 'tech_stack', 'project_plan'."
+        )
+        response = await self.get_ai_response(f"Job: {job_desc}", sys_msg, response_format=True)
+        if not response: return None
         try:
-            await page.goto("https://www.freelancer.com/search/projects?q=python%20react%20automation%20bot", wait_until="domcontentloaded")
-            await asyncio.sleep(5)
-            
-            job_cards = await page.query_selector_all(self.ui["job_card"])
-            logger.info(f"🔍 Found {len(job_cards)} potential jobs on search page.")
-            
-            extracted_jobs = []
-            for card in job_cards[:2]:
-                title_elem = await card.query_selector(self.ui["job_title"])
-                if title_elem:
-                    title = await title_elem.inner_text()
-                    job_link = await title_elem.get_attribute("href")
-                    desc_elem = await card.query_selector(self.ui["job_desc"])
-                    desc = await desc_elem.inner_text() if desc_elem else ""
-                    if job_link:
-                        extracted_jobs.append({"title": title, "link": job_link, "desc": desc})
-            
-            for job in extracted_jobs:
-                try:
-                    title = job["title"]
-                    job_link = job["link"]
-                    description = job["desc"]
-                    jid = job_link.split("/")[-1]
-                    
-                    if not self.redis or not self.redis.get(f"fl_bid:{jid}"):
-                        logger.info(f"🎯 Target Acquired: {title}")
-                        
-                        prompt = f"Project: {title}\nDesc: {description}\nWrite a strict technical proposal (max 400 chars). State you can start immediately. No greetings."
-                        proposal = await self.get_ai_brain(prompt)
-                        
-                        if proposal:
-                            logger.info("🧠 AI Proposal Generated. Navigating to project page...")
-                            await page.goto(f"https://www.freelancer.com{job_link}", wait_until="networkidle")
-                            await asyncio.sleep(5)
-                            
-                            box_selectors = [
-                                "textarea#description", 
-                                "textarea[formcontrolname='description']", 
-                                "textarea[name='description']",
-                                "app-bid-form textarea",
-                                "textarea" 
-                            ]
-                            
-                            box_found = False
-                            for sel in box_selectors:
-                                elements = page.locator(sel)
-                                if await elements.count() > 0 and await elements.first.is_visible():
-                                    await self.human_type(elements.first, proposal)
-                                    box_found = True
-                                    break
-                            
-                            if not box_found:
-                                logger.warning(f"❌ Could not find Proposal Box for {title}")
-                                # ---> မျက်မြင်သက်သေ Screenshot ရိုက်ယူခြင်း <---
-                                await page.screenshot(path="error.png", full_page=True)
-                                logger.info("📸 ERROR SCREENSHOT SAVED! Please view it via your Render URL.")
-                                continue
-
-                            for sel in ["input#bid", "input[formcontrolname='bidAmount']", "input[name='bidAmount']"]:
-                                elements = page.locator(sel)
-                                if await elements.count() > 0 and await elements.first.is_visible():
-                                    await elements.first.fill(str(random.randint(20, 60)))
-                                    break
-
-                            for sel in ["input#period", "input[formcontrolname='period']", "input[name='period']"]:
-                                elements = page.locator(sel)
-                                if await elements.count() > 0 and await elements.first.is_visible():
-                                    await elements.first.fill(str(random.randint(2, 4)))
-                                    break
-
-                            btn_selectors = [
-                                "button.PlaceBid-btn",
-                                "button:has-text('Place Bid')",
-                                "button:has-text('Submit Proposal')",
-                                "app-bid-form button[type='submit']"
-                            ]
-                            btn_found = False
-                            for sel in btn_selectors:
-                                elements = page.locator(sel)
-                                if await elements.count() > 0 and await elements.first.is_visible():
-                                    await elements.first.click()
-                                    btn_found = True
-                                    break
-                            
-                            if btn_found:
-                                logger.info(f"✅ SUCCESS: Bid Placed for {title}!")
-                                if self.redis: self.redis.setex(f"fl_bid:{jid}", 604800, "done")
-                                await self.notify(f"🚀 <b>Bid Placed:</b> {title}")
-                            else:
-                                logger.error(f"❌ Failed to find 'Place Bid' submit button for {title}.")
-                    else:
-                        logger.info(f"⏭️ Skipped (Already bid): {title}")
-                except Exception as e:
-                    logger.error(f"⚠️ Error on specific job ({job['title']}): {e}")
+            parsed_json = json.loads(re.sub(r'```json\s*|\s*```', '', response, flags=re.IGNORECASE).strip())
+            del response # Memory optimization
+            gc.collect()
+            return parsed_json
         except Exception as e:
-            logger.error(f"⚠️ Critical error in bidding phase: {e}")
+            logger.error(f"JSON Parse Error: {e}")
+            return None
 
-    async def handle_negotiations_and_delivery(self, page):
-        logger.info("Scanning Inbox for Negotiations and Projects...")
-        await page.goto("https://www.freelancer.com/messages", wait_until="domcontentloaded")
-        await asyncio.sleep(8)
-        
-        threads = await page.query_selector_all(self.ui["chat_threads"])
-        for thread in threads[:4]:
-            await thread.click()
-            await asyncio.sleep(4)
-            
-            messages = await page.query_selector_all(self.ui["chat_messages"])
-            if not messages: continue
-            
-            chat_history = [await msg.inner_text() for msg in messages[-5:]]
-            last_msg = chat_history[-1]
-            chat_id = str(hash(last_msg))
-            
-            if self.redis and self.redis.get(f"replied:{chat_id}"): continue
+assistant = PhoGoUltraAssistant()
 
-            is_funded = await page.query_selector(self.ui["milestone_badge"]) is not None
-
-            if not is_funded:
-                prompt = f"Client: '{last_msg}'. Context: {chat_history[:-1]}. Reply to convince them to award the project. Max 2 sentences."
-                reply_text = await self.get_ai_brain(prompt)
-                if reply_text:
-                    await self.human_type(page.locator(self.ui["message_box"]), reply_text)
-                    await page.click(self.ui["send_msg_btn"])
-                    if self.redis: self.redis.setex(f"replied:{chat_id}", 86400, "done")
-                    await self.notify(f"💬 <b>Auto-Replied:</b> {reply_text}")
-            else:
-                if self.redis and not self.redis.get(f"delivered_code:{chat_id}"):
-                    await self.notify("💰 <b>Milestone Funded!</b> Commencing Auto-Delivery...")
-                    await asyncio.sleep(random.randint(300, 600)) 
-                    
-                    prompt = f"Based on this history: {chat_history}, generate the FINAL production Python/React code. Output ONLY code inside markdown."
-                    ai_code = await self.get_ai_brain(prompt)
-                    
-                    if ai_code:
-                        memory_file = self.extract_code_to_buffer(ai_code, "Final_Delivery")
-                        await page.locator(self.ui["file_upload"]).set_input_files(files=[memory_file])
-                        await asyncio.sleep(5)
-                        
-                        delivery_msg = "Project completed. Please find the attached source code. Kindly release the milestone if everything is working."
-                        await self.human_type(page.locator(self.ui["message_box"]), delivery_msg)
-                        await page.click(self.ui["send_msg_btn"])
-                        
-                        if self.redis: self.redis.setex(f"delivered_code:{chat_id}", 2592000, "done")
-                        del memory_file
-                        await self.notify("✅ <b>Mission Accomplished!</b> Code Delivered & Milestone Release Requested.")
-
-    async def system_core(self):
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True, 
-                args=[
-                    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process",
-                    "--js-flags=--max-old-space-size=256", "--disable-blink-features=AutomationControlled"
-                ]
-            )
-            context = await browser.new_context(
-                viewport={'width': 1366, 'height': 768},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-            
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            """)
-
-            async def block_resources(route):
-                if route.request.resource_type in ["image", "font", "stylesheet"]:
-                    await route.abort()
-                else:
-                    await route.continue_()
-
-            await page.route("**/*", block_resources)
-
-            try:
-                await self.handle_login(page)
-                while True:
-                    await self.execute_bidding(page)
-                    await self.handle_negotiations_and_delivery(page)
-                    gc.collect() 
-                    
-                    sleep_time = random.randint(1800, 3600)
-                    logger.info(f"Cycle completed. Memory cleared. Sleeping {sleep_time}s")
-                    await asyncio.sleep(sleep_time)
-            except Exception as e:
-                logger.critical(f"System Crash in loop: {e}")
-            finally:
-                await browser.close()
-
-if __name__ == "__main__":
-    threading.Thread(target=run_health_server, daemon=True).start()
-    threading.Thread(target=self_ping, daemon=True).start()
-    
+# ==========================================
+# 4. Helpers (Memory-Efficient Zip Generator)
+# ==========================================
+async def keep_typing(chat_id, context, action_type=ChatAction.TYPING):
     try:
-        engine = AutoIncomeGenerator()
-        asyncio.run(engine.system_core())
-    except Exception as e:
-        logger.critical(f"FATAL BOOT ERROR: {e}")
+        while True:
+            await context.bot.send_chat_action(chat_id=chat_id, action=action_type)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
+
+def create_project_zip(files_dict, job_id):
+    temp_dir = tempfile.mkdtemp()
+    zip_filename = f"Project_Build_Job{job_id}.zip"
+    zip_filepath = os.path.join(tempfile.gettempdir(), zip_filename)
+
+    try:
+        for file_path, file_content in files_dict.items():
+            full_path = os.path.join(temp_dir, file_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w', encoding='utf-8') as f:
+                f.write(str(file_content))
+
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_p = os.path.join(root, file)
+                    arcname = os.path.relpath(file_p, temp_dir)
+                    zipf.write(file_p, arcname)
+                    
+        return zip_filepath
+    finally:
+        shutil.rmtree(temp_dir)
+        # Force GC to clear file operations from memory
+        gc.collect()
+
+# ==========================================
+# 5. Core Handlers
+# ==========================================
+async def process_new_job(job_desc, user_id, message_obj, context):
+    processing_msg = await message_obj.reply_text("🧠 Project Plan စတင်ရေးဆွဲနေပါသည်...")
+    typing_task = asyncio.create_task(keep_typing(message_obj.chat_id, context))
+
+    try:
+        analysis = await assistant.analyze_and_plan_job(job_desc)
+        if not analysis:
+            return await processing_msg.edit_text("❌ API Error ဖြစ်ပေါ်နေပါသည်။ နောက်မှ ထပ်မံကြိုးစားပါ။")
+
+        async with aiosqlite.connect(DB_NAME) as db:
+            cursor = await db.execute('''INSERT INTO job_history 
+                                         (user_id, job_desc, project_plan, proposal, price, timeline, tech_stack)
+                                         VALUES (?, ?, ?, ?, ?, ?, ?)''', 
+                                      (user_id, job_desc, analysis.get('project_plan'), analysis.get('proposal'), 
+                                       analysis.get('price', 0), analysis.get('timeline'), analysis.get('tech_stack')))
+            job_id = cursor.lastrowid
+            await db.commit()
+
+        keyboard = [[InlineKeyboardButton("🚀 1. Build Entire System (Zip)", callback_query_data=f'step_code_{job_id}')]]
+        
+        result_text = (
+            f"🎯 **System Architecture Ready! (ID: `{job_id}`)**\n\n"
+            f"🗣️ **Req:** _{job_desc[:100]}..._\n"
+            f"💰 **Budget:** ${analysis.get('price', 0)} | ⏳ **Time:** {analysis.get('timeline')}\n"
+            f"🛠 **Tech:** {analysis.get('tech_stack')}\n\n"
+            "အောက်ပါခလုတ်ကို နှိပ်၍ Code အားလုံးကို Zip ဖြင့် ထုတ်ယူပါ။"
+        )
+        await processing_msg.edit_text(result_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        
+        del analysis
+        gc.collect()
+    finally:
+        typing_task.cancel()
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user_input = update.message.text
+
+    # Check state from Redis instead of Memory Dict
+    state_data_str = await redis_client.get(f"state:{user_id}")
+    
+    if state_data_str:
+        state_data = json.loads(state_data_str)
+        job_id = state_data['job_id']
+        action = state_data['action']
+        
+        await redis_client.delete(f"state:{user_id}") # Clear state
+        await handle_code_iteration(update, context, job_id, action, user_input)
+        return
+
+    await update.message.reply_text("💬 Project အသစ်စတင်ရန် `/job <အကြောင်းအရာ>` ဟု ရိုက်ထည့်ပါ။")
+
+async def handle_code_iteration(update: Update, context: ContextTypes.DEFAULT_TYPE, job_id, action, instruction):
+    processing_msg = await update.message.reply_text("⚙️ System ကို Update ပြုလုပ်နေပါသည်...")
+    typing_task = asyncio.create_task(keep_typing(update.effective_chat.id, context))
+
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute('SELECT job_desc, tech_stack, generated_code FROM job_history WHERE id=?', (job_id,)) as cursor:
+                row = await cursor.fetchone()
+        
+        if not row or not row[2]: return await processing_msg.edit_text("❌ DB Error: ယခင် Code များကို ရှာမတွေ့ပါ။")
+        job_desc, tech_stack, current_code_json = row
+
+        sys_prompt = (
+            f"You are a Principal {tech_stack} Engineer. Update the system based on instruction. "
+            "Output ONLY a valid JSON object. Keys: file paths, Values: RAW code."
+        )
+        prompt = f"Original: {job_desc}\n\nCurrent:\n{current_code_json}\n\nNEW INSTRUCTION ({action}): {instruction}"
+
+        # Free memory before API call
+        del current_code_json
+        gc.collect()
+
+        response = await assistant.get_ai_response(prompt, sys_prompt, response_format=True)
+        
+        if response:
+            try:
+                files_dict = json.loads(response)
+                
+                async with aiosqlite.connect(DB_NAME) as db:
+                    await db.execute("UPDATE job_history SET generated_code=?, status='3. Review' WHERE id=?", (json.dumps(files_dict), job_id))
+                    await db.commit()
+
+                zip_path = create_project_zip(files_dict, job_id)
+                
+                iter_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ Add New Feature", callback_query_data=f'iter_add_{job_id}'),
+                     InlineKeyboardButton("🐛 Fix Bug/Error", callback_query_data=f'iter_fix_{job_id}')],
+                    [InlineKeyboardButton("🧪 Mark as Testing", callback_query_data=f'step_test_{job_id}')]
+                ])
+                
+                await processing_msg.delete()
+                with open(zip_path, 'rb') as f:
+                    await update.message.reply_document(
+                        document=f, 
+                        caption=f"✅ **System Updated (Job {job_id})**\nညွှန်ကြားချက်: _{instruction}_", 
+                        reply_markup=iter_kb,
+                        parse_mode='Markdown'
+                    )
+                os.remove(zip_path)
+                
+                del files_dict, response
+                gc.collect()
+            except Exception as e:
+                logger.error(f"Iteration Error: {e}")
+                await processing_msg.edit_text("❌ Error ဖြစ်သွားပါသည်။")
+        else:
+            await processing_msg.edit_text("❌ API အခက်အခဲရှိပါသည်။")
+    finally:
+        typing_task.cancel()
+
+# ==========================================
+# 6. Callback Handlers (Redis Integrated)
+# ==========================================
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if str(query.from_user.id) != ADMIN_ID: return await query.answer("⛔ Access Denied.", show_alert=True)
+    await query.answer()
+    data = query.data
+
+    if data.startswith('step_code_'):
+        job_id = data.split('_')[-1]
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute('SELECT project_plan, tech_stack FROM job_history WHERE id=?', (job_id,)) as cursor:
+                row = await cursor.fetchone()
+        
+        plan, tech_stack = row
+        status_msg = await query.message.reply_text("⚙️ System တစ်ခုလုံးကို တည်ဆောက်နေပါသည်...")
+        typing_task = asyncio.create_task(keep_typing(update.effective_chat.id, context))
+
+        try:
+            sys_prompt = f"You are a Principal {tech_stack} Architect. Create codebase JSON from plan."
+            response = await assistant.get_ai_response(f"Plan:\n{plan}", sys_prompt, response_format=True)
+            
+            if response:
+                try:
+                    files_dict = json.loads(response)
+                    
+                    async with aiosqlite.connect(DB_NAME) as db:
+                        await db.execute("UPDATE job_history SET generated_code=?, status='2. Coding Done' WHERE id=?", (json.dumps(files_dict), job_id))
+                        await db.commit()
+
+                    zip_path = create_project_zip(files_dict, job_id)
+                    
+                    iter_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("➕ Add Feature", callback_query_data=f'iter_add_{job_id}'),
+                         InlineKeyboardButton("🐛 Fix Bug", callback_query_data=f'iter_fix_{job_id}')],
+                        [InlineKeyboardButton("🧪 Mark as Testing", callback_query_data=f'step_test_{job_id}')]
+                    ])
+                    await status_msg.delete()
+                    with open(zip_path, 'rb') as f:
+                        await query.message.reply_document(document=f, caption="✅ **Full System Build Complete!**", reply_markup=iter_kb, parse_mode='Markdown')
+                    os.remove(zip_path) 
+                    
+                    # Memory Cleanup
+                    del files_dict, response
+                    gc.collect()
+                except Exception as e:
+                    logger.error(f"Zip Creation Error: {e}")
+                    await status_msg.edit_text("❌ Error ဖြစ်သွားပါသည်။")
+            else:
+                await status_msg.edit_text("❌ API အခက်အခဲရှိပါသည်။")
+        finally:
+            typing_task.cancel()
+
+    elif data.startswith('iter_'):
+        parts = data.split('_')
+        action, job_id = parts[1], parts[2]
+        
+        # Save state to Redis instead of memory
+        state_data = {'action': 'Add Feature' if action == 'add' else 'Fix Bug', 'job_id': job_id}
+        await redis_client.set(f"state:{ADMIN_ID}", json.dumps(state_data), ex=3600) # Expire in 1 hour
+        
+        await query.message.reply_text("👇 ထပ်မံထည့်သွင်းလိုသော အချက်ကို ရိုက်ထည့်ပါ။", reply_markup=ForceReply(selective=True))
+
+    elif data.startswith('step_test_'):
+        job_id = data.split('_')[-1]
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE job_history SET status='4. Testing & Review' WHERE id=?", (job_id,))
+            await db.commit()
+            
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤝 Client Approved", callback_query_data=f'step_approve_{job_id}')]])
+        await query.edit_message_caption(caption=f"🧪 **Job {job_id} Testing Mode**", reply_markup=kb, parse_mode='Markdown')
+
+    elif data.startswith('step_approve_'):
+        job_id = data.split('_')[-1]
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE job_history SET status='5. Completed' WHERE id=?", (job_id,))
+            await db.commit()
+            
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💰 Mark as Paid", callback_query_data=f'step_paid_{job_id}')]])
+        await query.edit_message_caption(caption=f"✅ **Job {job_id} Completed!**", reply_markup=kb, parse_mode='Markdown')
+
+    elif data.startswith('step_paid_'):
+        job_id = data.split('_')[-1]
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE job_history SET status='6. Paid ✅' WHERE id=?", (job_id,))
+            await db.commit()
+            
+        await query.edit_message_caption(caption=f"🎉 **Job {job_id} Fully Closed!**", reply_markup=None, parse_mode='Markdown')
+
+async def handle_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args: return await update.message.reply_text("❌ `/job <အလုပ်အကြောင်းအရာ>` ရိုက်ထည့်ပါ။")
+    await process_new_job(" ".join(context.args), update.effective_user.id, update.message, context)
+
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(init_db).build()
+    app.add_handler(CommandHandler("job", handle_job, filters=ADMIN_FILTER))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND) & ADMIN_FILTER, handle_message))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    print("🔒 Ultra End-to-End System Active (Memory Optimized)...")
+    app.run_polling(drop_pending_updates=True)
