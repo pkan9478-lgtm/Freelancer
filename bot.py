@@ -45,36 +45,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Persistent storage folder
 os.makedirs('data', exist_ok=True)
 DB_NAME = 'data/phogo_ultra_master.db' 
 ADMIN_FILTER = filters.User(user_id=int(ADMIN_ID))
 
 FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
-# Redis Client
 redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
 
 # ==========================================
-# 2. Render Health Check Server (Keep Alive)
+# 2. Render Health Check Server
 # ==========================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"PhoGo Ultra Bot is Live!")
-
-    def log_message(self, format, *args):
-        return # Disable noisy logs
+        self.wfile.write(b"Bot is Live!")
+    def log_message(self, format, *args): return
 
 def run_health_check():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    logger.info(f"🚀 Health Check Server active on port {port}")
     server.serve_forever()
 
 # ==========================================
-# 3. AI Assistant & Database Logic
+# 3. AI Assistant & Utilities
 # ==========================================
 async def init_db(app: Application):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -99,7 +94,6 @@ class PhoGoUltraAssistant:
                     if response_format: kwargs["response_format"] = {"type": "json_object"}
                     completion = await self.groq_client.chat.completions.create(**kwargs)
                     res = completion.choices[0].message.content
-                    del completion
                     gc.collect()
                     return res
                 except Exception as e:
@@ -109,9 +103,6 @@ class PhoGoUltraAssistant:
 
 assistant = PhoGoUltraAssistant()
 
-# ==========================================
-# 4. Helpers
-# ==========================================
 def create_project_zip(files_dict, job_id):
     temp_dir = tempfile.mkdtemp()
     zip_path = os.path.join(tempfile.gettempdir(), f"Project_Job{job_id}.zip")
@@ -129,25 +120,37 @@ def create_project_zip(files_dict, job_id):
         gc.collect()
 
 # ==========================================
-# 5. Core Handlers
+# 4. Core Logic (Fixed Parameter Binding)
 # ==========================================
 async def handle_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return await update.message.reply_text("❌ Use: `/job <description>`")
+    if not context.args: return await update.message.reply_text("❌ `/job <အကြောင်းအရာ>`")
     desc = " ".join(context.args)
     msg = await update.message.reply_text("🧠 Architecture စတင်ရေးဆွဲနေပါသည်...")
     
-    analysis_raw = await assistant.get_ai_response(desc, "Output ONLY JSON: proposal, price, timeline, tech_stack, project_plan.", response_format=True)
-    if not analysis_raw: return await msg.edit_text("❌ AI Error")
+    sys_prompt = "Output ONLY JSON with keys: proposal, price (int), timeline, tech_stack (string/list), project_plan (string/list)."
+    raw = await assistant.get_ai_response(desc, sys_prompt, response_format=True)
     
-    data = json.loads(analysis_raw)
-    async with aiosqlite.connect(DB_NAME) as db:
-        cur = await db.execute("INSERT INTO job_history (user_id, job_desc, project_plan, proposal, price, timeline, tech_stack) VALUES (?,?,?,?,?,?,?)",
-                               (update.effective_user.id, desc, data['project_plan'], data['proposal'], data['price'], data['timeline'], data['tech_stack']))
-        job_id = cur.lastrowid
-        await db.commit()
+    if not raw: return await msg.edit_text("❌ AI Error")
+    
+    try:
+        data = json.loads(raw)
+        # Fix: SQLite Binding Error ကိုဖြေရှင်းရန် List များကို String ပြောင်းခြင်း
+        p_plan = "\n".join(data['project_plan']) if isinstance(data['project_plan'], list) else str(data['project_plan'])
+        t_stack = ", ".join(data['tech_stack']) if isinstance(data['tech_stack'], list) else str(data['tech_stack'])
+        
+        async with aiosqlite.connect(DB_NAME) as db:
+            cur = await db.execute(
+                "INSERT INTO job_history (user_id, job_desc, project_plan, proposal, price, timeline, tech_stack) VALUES (?,?,?,?,?,?,?)",
+                (update.effective_user.id, desc, p_plan, str(data['proposal']), int(data['price']), str(data['timeline']), t_stack)
+            )
+            job_id = cur.lastrowid
+            await db.commit()
 
-    kb = [[InlineKeyboardButton("🚀 Build Full System (Zip)", callback_query_data=f'step_code_{job_id}')]]
-    await msg.edit_text(f"✅ **ID: {job_id}** Ready!\nBudget: ${data['price']}\nTimeline: {data['timeline']}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        kb = [[InlineKeyboardButton("🚀 Build Source Code (Zip)", callback_query_data=f'step_code_{job_id}')]]
+        await msg.edit_text(f"🎯 **Job {job_id} Ready!**\n💰 Budget: ${data['price']}\n🛠 Tech: {t_stack}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Processing Error: {e}")
+        await msg.edit_text(f"❌ Error: {str(e)}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -156,35 +159,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     job_id = data.split('_')[-1]
 
     if data.startswith('step_code_'):
-        status_msg = await query.message.reply_text("⚙️ Generating Code files...")
+        status_msg = await query.message.reply_text("⚙️ Generating all files...")
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute('SELECT project_plan, tech_stack FROM job_history WHERE id=?', (job_id,)) as cur:
                 row = await cur.fetchone()
         
-        prompt = f"Plan: {row[0]}. Generate complete source code as JSON (path: content)."
-        code_raw = await assistant.get_ai_response(prompt, f"Principal Engineer for {row[1]}. JSON ONLY.", response_format=True)
+        p = f"Build full project files as JSON (path: code) for: {row[0]}"
+        res = await assistant.get_ai_response(p, f"Senior Engineer for {row[1]}. JSON ONLY.", response_format=True)
         
-        if code_raw:
-            files = json.loads(code_raw)
+        if res:
+            files = json.loads(res)
             zip_p = create_project_zip(files, job_id)
             with open(zip_p, 'rb') as f:
-                await query.message.reply_document(document=f, caption=f"✅ Job {job_id} Code Build Complete.")
+                await query.message.reply_document(document=f, caption=f"✅ Job {job_id} Build Complete.")
             os.remove(zip_p)
             await status_msg.delete()
-            gc.collect()
 
 # ==========================================
-# 6. Run Application
+# 5. Main
 # ==========================================
 if __name__ == '__main__':
-    # 1. Start Render Health Check in background
     threading.Thread(target=run_health_check, daemon=True).start()
-
-    # 2. Build Telegram Application
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(init_db).build()
     app.add_handler(CommandHandler("job", handle_job, filters=ADMIN_FILTER))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND) & ADMIN_FILTER, lambda u, c: u.message.reply_text("💬 Use /job to start.")))
-    
-    logger.info("🤖 Bot is polling...")
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND) & ADMIN_FILTER, lambda u, c: u.message.reply_text("💬 /job ကိုသုံးပါ။")))
     app.run_polling(drop_pending_updates=True)
