@@ -1,5 +1,5 @@
-playwright
-redis
-python-telegram-bot
-requests
-groq
+python-telegram-bot==21.0.1
+groq==0.4.2
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+redis==5.0.3
