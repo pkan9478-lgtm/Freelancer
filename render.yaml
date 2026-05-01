@@ -1,23 +1,15 @@
-version: '3.8'
-
 services:
-  bot:
-    build: .
-    container_name: phogo_bot
-    restart: unless-stopped
-    environment:
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - ADMIN_ID=${ADMIN_ID}
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-    volumes:
-      - ./data:/app/data
-
-  redis:
-    image: redis:7-alpine
-    container_name: phogo_redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
+  - type: web
+    name: phogo-ultra-bot
+    env: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: PORT
+        value: "8000"
