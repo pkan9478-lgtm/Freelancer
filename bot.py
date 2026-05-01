@@ -7,10 +7,10 @@ import zipfile
 import shutil
 import re
 import gc
-import threading
-import aiosqlite
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
+
+import aiosqlite
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -19,169 +19,139 @@ from telegram.ext import (
     MessageHandler, 
     filters, 
     ContextTypes, 
-    CallbackQueryHandler,
-    Application
+    CallbackQueryHandler
 )
 from groq import AsyncGroq
 from dotenv import load_dotenv
-import redis.asyncio as aioredis
 
-# ==========================================
-# 1. Setup & Configurations
-# ==========================================
+# --- Configurations ---
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_ID = os.getenv("ADMIN_ID")
-REDIS_URL = os.getenv("REDIS_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID")) if os.getenv("ADMIN_ID") else None
+PORT = int(os.environ.get("PORT", 8000))
 
-if not TELEGRAM_TOKEN or not GROQ_API_KEY or not ADMIN_ID:
-    print("❌ Error: API Keys or ADMIN_ID missing.")
-    exit()
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-os.makedirs('data', exist_ok=True)
-DB_NAME = 'data/phogo_ultra_master.db' 
-ADMIN_FILTER = filters.User(user_id=int(ADMIN_ID))
-
+DB_NAME = 'phogo_master.db'
 FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+admin_states = {}
 
-redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+# --- 1. Render Health Check Server ---
+async def handle_health_check(request):
+    return web.Response(text="Bot is Alive!")
 
-# ==========================================
-# 2. Render Health Check Server
-# ==========================================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is Live!")
-    def log_message(self, format, *args): return
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
 
-def run_health_check():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
-
-# ==========================================
-# 3. AI Assistant & Utilities
-# ==========================================
-async def init_db(app: Application):
+# --- 2. Database Initialization ---
+async def init_db(app):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('PRAGMA journal_mode=WAL;')
         await db.execute('''CREATE TABLE IF NOT EXISTS job_history
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, job_desc TEXT, 
-                      project_plan TEXT, proposal TEXT, price INTEGER, timeline TEXT, 
-                      tech_stack TEXT, generated_code TEXT, status TEXT DEFAULT '1. Gathering')''')
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER, job_desc TEXT, project_plan TEXT,
+                      tech_stack TEXT, generated_code TEXT, status TEXT)''')
         await db.commit()
 
-class PhoGoUltraAssistant:
+# --- 3. AI Logic ---
+class PhoGoAI:
     def __init__(self):
-        self.groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-        self.semaphore = asyncio.Semaphore(1) 
+        self.client = AsyncGroq(api_key=GROQ_API_KEY)
 
-    async def get_ai_response(self, prompt, system_msg, response_format=None):
-        messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}]
-        async with self.semaphore:
-            for model_name in FALLBACK_MODELS:
-                try:
-                    kwargs = {"messages": messages, "model": model_name, "temperature": 0.4}
-                    if response_format: kwargs["response_format"] = {"type": "json_object"}
-                    completion = await self.groq_client.chat.completions.create(**kwargs)
-                    res = completion.choices[0].message.content
-                    gc.collect()
-                    return res
-                except Exception as e:
-                    logger.warning(f"⚠️ API Error: {e}")
-                    await asyncio.sleep(2)
-            return None
+    async def chat(self, prompt, sys_msg, json_mode=False):
+        for model in FALLBACK_MODELS:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=model,
+                    messages=[{"role":"system","content":sys_msg},{"role":"user","content":prompt}],
+                    response_format={"type": "json_object"} if json_mode else None
+                )
+                return resp.choices[0].message.content
+            except Exception as e:
+                logger.error(f"AI Error: {e}")
+        return None
 
-assistant = PhoGoUltraAssistant()
+ai = PhoGoAI()
 
-def create_project_zip(files_dict, job_id):
-    temp_dir = tempfile.mkdtemp()
-    zip_path = os.path.join(tempfile.gettempdir(), f"Project_Job{job_id}.zip")
+# --- 4. Helpers ---
+def create_zip(files_dict, job_id):
+    tmp_dir = tempfile.mkdtemp()
+    zip_name = f"Build_Job_{job_id}.zip"
+    zip_path = os.path.join(tempfile.gettempdir(), zip_name)
     try:
         for path, content in files_dict.items():
-            f_path = os.path.join(temp_dir, path)
-            os.makedirs(os.path.dirname(f_path), exist_ok=True)
-            with open(f_path, 'w', encoding='utf-8') as f: f.write(str(content))
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
-            for root, _, files in os.walk(temp_dir):
-                for f in files: z.write(os.path.join(root, f), os.path.relpath(os.path.join(root, f), temp_dir))
+            full_path = os.path.join(tmp_dir, path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, 'w', encoding='utf-8') as f: f.write(content)
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for r, d, files in os.walk(tmp_dir):
+                for f in files:
+                    fp = os.path.join(r, f)
+                    zf.write(fp, os.path.relpath(fp, tmp_dir))
         return zip_path
     finally:
-        shutil.rmtree(temp_dir)
+        shutil.rmtree(tmp_dir)
         gc.collect()
 
-# ==========================================
-# 4. Core Logic (Fixed Parameter Binding)
-# ==========================================
-async def handle_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return await update.message.reply_text("❌ `/job <အကြောင်းအရာ>`")
+# --- 5. Bot Handlers ---
+async def start_job(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
     desc = " ".join(context.args)
-    msg = await update.message.reply_text("🧠 Architecture စတင်ရေးဆွဲနေပါသည်...")
+    if not desc: return await update.message.reply_text("❌ `/job <အကြောင်းအရာ>` ရိုက်ပါ။")
     
-    sys_prompt = "Output ONLY JSON with keys: proposal, price (int), timeline, tech_stack (string/list), project_plan (string/list)."
-    raw = await assistant.get_ai_response(desc, sys_prompt, response_format=True)
+    msg = await update.message.reply_text("🧠 Architecture ရေးဆွဲနေသည်...")
+    sys_msg = "Output ONLY JSON with keys: proposal, price, timeline, tech_stack, project_plan."
+    res = await ai.chat(f"Requirement: {desc}", sys_msg, json_mode=True)
     
-    if not raw: return await msg.edit_text("❌ AI Error")
-    
-    try:
-        data = json.loads(raw)
-        # Fix: SQLite Binding Error ကိုဖြေရှင်းရန် List များကို String ပြောင်းခြင်း
-        p_plan = "\n".join(data['project_plan']) if isinstance(data['project_plan'], list) else str(data['project_plan'])
-        t_stack = ", ".join(data['tech_stack']) if isinstance(data['tech_stack'], list) else str(data['tech_stack'])
-        
+    if res:
+        data = json.loads(res)
         async with aiosqlite.connect(DB_NAME) as db:
-            cur = await db.execute(
-                "INSERT INTO job_history (user_id, job_desc, project_plan, proposal, price, timeline, tech_stack) VALUES (?,?,?,?,?,?,?)",
-                (update.effective_user.id, desc, p_plan, str(data['proposal']), int(data['price']), str(data['timeline']), t_stack)
-            )
+            cur = await db.execute("INSERT INTO job_history (user_id, job_desc, project_plan, tech_stack, status) VALUES (?,?,?,?,?)",
+                                   (ADMIN_ID, desc, data['project_plan'], data['tech_stack'], 'Planning'))
             job_id = cur.lastrowid
             await db.commit()
+        
+        kb = [[InlineKeyboardButton("🚀 Build Full Code (Zip)", callback_data=f"build_{job_id}")]]
+        await msg.edit_text(f"✅ Architecture Ready (ID: {job_id})\nTech: {data['tech_stack']}", reply_markup=InlineKeyboardMarkup(kb))
 
-        kb = [[InlineKeyboardButton("🚀 Build Source Code (Zip)", callback_query_data=f'step_code_{job_id}')]]
-        await msg.edit_text(f"🎯 **Job {job_id} Ready!**\n💰 Budget: ${data['price']}\n🛠 Tech: {t_stack}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Processing Error: {e}")
-        await msg.edit_text(f"❌ Error: {str(e)}")
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    job_id = data.split('_')[-1]
 
-    if data.startswith('step_code_'):
-        status_msg = await query.message.reply_text("⚙️ Generating all files...")
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute('SELECT project_plan, tech_stack FROM job_history WHERE id=?', (job_id,)) as cur:
-                row = await cur.fetchone()
+    if data.startswith("build_"):
+        job_id = data.split("_")[1]
+        msg = await query.message.reply_text("⚙️ Code များရေးသားနေသည် (Zip ထုတ်ပေးပါမည်)...")
         
-        p = f"Build full project files as JSON (path: code) for: {row[0]}"
-        res = await assistant.get_ai_response(p, f"Senior Engineer for {row[1]}. JSON ONLY.", response_format=True)
+        async with aiosqlite.connect(DB_NAME) as db:
+            cur = await db.execute("SELECT project_plan, tech_stack FROM job_history WHERE id=?", (job_id,))
+            row = await cur.fetchone()
+        
+        sys_msg = f"Create full system. Output ONLY JSON where keys are file paths and values are code strings."
+        res = await ai.chat(f"Plan: {row[0]} \nStack: {row[1]}", sys_msg, json_mode=True)
         
         if res:
             files = json.loads(res)
-            zip_p = create_project_zip(files, job_id)
+            zip_p = create_zip(files, job_id)
             with open(zip_p, 'rb') as f:
-                await query.message.reply_document(document=f, caption=f"✅ Job {job_id} Build Complete.")
+                await query.message.reply_document(document=f, caption=f"✅ Build Complete (Job: {job_id})")
             os.remove(zip_p)
-            await status_msg.delete()
 
-# ==========================================
-# 5. Main
-# ==========================================
+# --- Execution ---
 if __name__ == '__main__':
-    threading.Thread(target=run_health_check, daemon=True).start()
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_web_server())
+    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(init_db).build()
-    app.add_handler(CommandHandler("job", handle_job, filters=ADMIN_FILTER))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND) & ADMIN_FILTER, lambda u, c: u.message.reply_text("💬 /job ကိုသုံးပါ။")))
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CommandHandler("job", start_job))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    logger.info("Bot is running...")
+    app.run_polling()
