@@ -25,7 +25,6 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
-# Payment Info (Admin/Platform)
 PAYMENT_INFO = {
     "kpay": "09123456789 (U Ba)",
     "wave": "09123456789 (U Ba)"
@@ -35,7 +34,6 @@ bot = TeleBot(BOT_TOKEN)
 app = FastAPI(title="Digital Mall Auto-Run System Pro")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
-redis_client = None
 try:
     if REDIS_URL:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -48,8 +46,9 @@ except:
 # ==========================================
 # ၂။ DATABASE MODELS
 # ==========================================
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./data/mall_ai_pro.db")
-os.makedirs(os.path.dirname(DATABASE_URL.replace("sqlite:///", "")), exist_ok=True)
+DATA_DIR = "./data"
+os.makedirs(DATA_DIR, exist_ok=True)
+DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/mall_ai_pro.db")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -84,7 +83,7 @@ class Order(Base):
     quantity = Column(Integer, default=1) 
     transaction_id = Column(String) 
     address = Column(String) 
-    status = Column(String, default="pending") # pending, approved, shipped, delivered, cancelled
+    status = Column(String, default="pending") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     product = relationship("Product")
     user = relationship("User")
@@ -129,27 +128,53 @@ def get_telegram_image(file_id: str):
     except: raise HTTPException(status_code=404)
 
 # ==========================================
-# ၄။ API ENDPOINTS (Core Business Logic)
+# ၄။ API ENDPOINTS (Dynamic JSON & Core Logic)
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
     return {
         "user": {
-            "id": user.telegram_id, 
-            "name": user.full_name, 
-            "role": user.role, 
-            "default_address": user.default_address,
-            "phone": user.phone
-        }, 
-        "payment_info": PAYMENT_INFO
+            "id": user.telegram_id, "name": user.full_name, "role": user.role, 
+            "default_address": user.default_address, "phone": user.phone
+        }, "payment_info": PAYMENT_INFO
     }
+
+# 📍 LOCATION API (Auto Create & Fetch JSON)
+@app.get("/api/locations")
+def get_locations():
+    file_path = os.path.join(DATA_DIR, "locations.json")
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        sample_data = {
+            "ရန်ကုန်တိုင်းဒေသကြီး": {
+                "ရန်ကုန်အနောက်ပိုင်းခရိုင်": {
+                    "ကမာရွတ်မြို့နယ်": {
+                        "ကမာရွတ်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်", "အမှတ်(၃) ရပ်ကွက်"]
+                    },
+                    "လှိုင်မြို့နယ်": {
+                        "လှိုင်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "ဘူတာရုံရပ်ကွက်"]
+                    }
+                }
+            },
+            "မန္တလေးတိုင်းဒေသကြီး": {
+                "မန္တလေးခရိုင်": {
+                    "ချမ်းအေးသာစံမြို့နယ်": {
+                        "ချမ်းအေးသာစံ(မြို့ပေါ်)": ["မြို့မ", "ပတ်ကုန်း", "ဟေမာဇလ"]
+                    }
+                }
+            }
+        }
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(sample_data, f, ensure_ascii=False, indent=4)
+        return sample_data
 
 @app.get("/api/products")
 def get_products(category: str = "All", search: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
     query = db.query(Product)
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
-    
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
     categories = [c[0] for c in db.query(Product.category).distinct().all()] 
     res = [{"id":p.id, "name":p.name, "price":p.price, "desc":p.description, "category":p.category, "img":p.image_file_id, "stock":p.stock} for p in products]
@@ -177,24 +202,18 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             product.stock -= qty 
             total_amount += (product.price * qty)
             ordered_names.append(f"{product.name} (x{qty})")
-            if product.vendor: 
-                vendors_to_notify.add((product.vendor.telegram_id, product.name, qty))
+            if product.vendor: vendors_to_notify.add((product.vendor.telegram_id, product.name, qty))
         else:
             db.rollback()
             raise HTTPException(status_code=400, detail=f"'{product.name if product else 'Item'}' ပစ္စည်းလက်ကျန်မလုံလောက်ပါ။")
             
-    if address and user.default_address != address:
-        user.default_address = address
-    if phone and user.phone != phone:
-        user.phone = phone
+    if address and user.default_address != address: user.default_address = address
+    if phone and user.phone != phone: user.phone = phone
 
     db.commit()
-
-    # Auto-run Notifications
     try:
         items_str = "\n".join([f"- {n}" for n in ordered_names])
         bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nပို့ဆောင်ရမည့်လိပ်စာ: {address}\nTx ID: `{tx_id}`\n\n_ရောင်းချသူမှ ငွေသွင်းမှတ်တမ်း စစ်ဆေးပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
-        
         for v_tg_id, p_name, qty in vendors_to_notify:
             bot.send_message(v_tg_id, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name}\nပစ္စည်း: {p_name} (x{qty})\nလိပ်စာ: {address}\nTx ID: `{tx_id}`\n\nApp ထဲတွင် အော်ဒါအခြေအနေကို အတည်ပြုပေးပါ။", parse_mode="Markdown")
     except: pass
@@ -208,19 +227,14 @@ def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depen
 @app.post("/api/buyer/orders/{order_id}/cancel")
 def cancel_buyer_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     order = db.query(Order).filter(Order.id == order_id, Order.user_id == user.id).first()
-    if not order: raise HTTPException(status_code=404, detail="Order not found")
-    if order.status != "pending": raise HTTPException(status_code=400, detail="Only pending orders can be cancelled")
-    
+    if not order: raise HTTPException(status_code=404)
+    if order.status != "pending": raise HTTPException(status_code=400)
     order.status = "cancelled"
     order.product.stock += order.quantity 
     db.commit()
-    
-    if order.product.vendor:
-        try: bot.send_message(order.product.vendor.telegram_id, f"⚠️ ဝယ်သူ {user.full_name} မှ အော်ဒါဖျက်သိမ်းလိုက်ပါသည်။\nပစ္စည်း: {order.product.name} (x{order.quantity})")
-        except: pass
     return {"status": "success"}
 
-# Vendor Endpoints
+# VENDOR ENDPOINTS
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
@@ -229,24 +243,16 @@ def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depe
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    status_map = {
-        "approved": "✅ ငွေလွှဲမှန်ကန်ပါသည်။ ထုပ်ပိုးနေပါသည်။", 
-        "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", 
-        "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", 
-        "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"
-    }
+    status_map = {"approved": "✅ ငွေလွှဲမှန်ကန်ပါသည်။ ထုပ်ပိုးနေပါသည်။", "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"}
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order or (order.product.vendor_id != user.id and user.role != "admin"): raise HTTPException(status_code=400)
     
     new_status = request.query_params.get("status")
     if new_status not in status_map: raise HTTPException(status_code=400)
-
-    if new_status == "cancelled" and order.status != "cancelled": 
-        order.product.stock += order.quantity 
+    if new_status == "cancelled" and order.status != "cancelled": order.product.stock += order.quantity 
     order.status = new_status
     db.commit()
-    try: 
-        bot.send_message(order.user.telegram_id, f"{status_map[new_status]}\nပစ္စည်း: **{order.product.name} (x{order.quantity})**", parse_mode="Markdown")
+    try: bot.send_message(order.user.telegram_id, f"{status_map[new_status]}\nပစ္စည်း: **{order.product.name} (x{order.quantity})**", parse_mode="Markdown")
     except: pass
     return {"status": "success"}
 
@@ -258,32 +264,25 @@ def get_vendor_products(user: User = Depends(get_current_user), db: Session = De
 
 @app.put("/api/vendor/products/{product_id}/stock")
 async def update_product_stock(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     data = await request.json()
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if not product: raise HTTPException(status_code=404)
-    product.stock = data.get("stock", product.stock)
-    db.commit()
+    if product: product.stock = data.get("stock", product.stock); db.commit()
     return {"status": "success"}
 
 @app.put("/api/vendor/products/{product_id}/edit")
 async def edit_product_info(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     data = await request.json()
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if not product: raise HTTPException(status_code=404)
-    if "name" in data: product.name = data["name"]
-    if "price" in data: product.price = float(data["price"])
-    db.commit()
+    if product:
+        if "name" in data: product.name = data["name"]
+        if "price" in data: product.price = float(data["price"])
+        db.commit()
     return {"status": "success"}
 
 @app.delete("/api/vendor/products/{product_id}")
 def delete_product(product_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if not product: raise HTTPException(status_code=404)
-    db.delete(product)
-    db.commit()
+    if product: db.delete(product); db.commit()
     return {"status": "success"}
 
 # ==========================================
@@ -310,18 +309,12 @@ def handle_cms_photo(message):
             try:
                 msg = bot.reply_to(message, "⏳ AI ဖြင့် ပစ္စည်းအချက်အလက်များကို ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-                prompt = f"""
-                Analyze the following Burmese text for an e-commerce product: "{caption}"
-                Extract the details and return strictly in JSON format.
-                Required keys: 'name', 'price' (numeric, default 0), 'category' (Electronics, Fashion, Food, General), 'description', 'stock' (numeric, default 10).
-                """
+                prompt = f"""Analyze the Burmese text for an e-commerce product: "{caption}". Extract details to strictly JSON. Required keys: 'name', 'price' (numeric), 'category', 'description', 'stock' (numeric)."""
                 payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
                 res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload).json()
                 parsed = json.loads(res['choices'][0]['message']['content'])
-                
                 for k in ['name', 'price', 'category', 'description', 'stock']:
                     if parsed.get(k): ai_data[k] = parsed[k]
-                
                 bot.delete_message(message.chat.id, msg.message_id)
             except: pass
 
@@ -333,7 +326,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (User-Friendly UX Focus)
+# ၆။ FRONTEND UI (Full Dynamic Fetch Version)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -345,7 +338,7 @@ async def serve_frontend():
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <script src="https://cdn.tailwindcss.com"></script>
-        <title>Digital Mall Auto</title>
+        <title>Digital Mall Auto Pro</title>
         <style>
             body { font-family: sans-serif; -webkit-tap-highlight-color: transparent; background-color: #f3f4f6; }
             .tab-btn.active { color: #2563eb; border-bottom: 3px solid #2563eb; }
@@ -362,7 +355,6 @@ async def serve_frontend():
             .status-shipped { background-color: #f3e8ff; color: #9333ea; }
             .status-delivered { background-color: #dcfce3; color: #166534; }
             .status-cancelled { background-color: #fee2e2; color: #dc2626; }
-
             .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; color: #6b7280; }
             .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
         </style>
@@ -412,7 +404,6 @@ async def serve_frontend():
             <div id="cart-empty-state" class="empty-state hidden bg-white rounded-2xl shadow-sm border border-gray-100">
                 <div class="empty-icon">🛍️</div>
                 <p class="font-medium text-gray-800">ခြင်းတောင်းထဲတွင် ပစ္စည်းမရှိသေးပါ</p>
-                <p class="text-sm mt-1">ဈေးဝယ်မည် ကိုနှိပ်ပြီး ပစ္စည်းများရွေးချယ်ပါ။</p>
                 <button onclick="showTab('shop-tab', 'btn-shop')" class="mt-4 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold">ဈေးဝယ်ရန် သွားမည်</button>
             </div>
 
@@ -421,10 +412,10 @@ async def serve_frontend():
                 
                 <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
                     <div class="flex justify-between items-center font-bold text-lg mb-4 border-b border-gray-100 pb-4">
-                        <span class="text-gray-700">စုစုပေါင်း ကျသင့်ငွေ:</span> 
+                        <span class="text-gray-700">စုစုပေါင်း:</span> 
                         <span id="cart-total" class="text-blue-600 text-2xl">0 Ks</span>
                     </div>
-                    
+
                     <div class="bg-blue-50 border border-blue-100 p-4 rounded-xl mb-5 text-sm text-blue-800 shadow-inner">
                         <p class="font-bold mb-2 flex items-center gap-1"><span>💳</span> ငွေပေးချေရန် အကောင့်များ</p>
                         <div class="grid grid-cols-1 gap-2">
@@ -434,46 +425,61 @@ async def serve_frontend():
                     </div>
 
                     <div class="bg-gray-50 border border-gray-200 p-4 rounded-xl mb-5">
-                        <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-1"><span>📍</span> ပို့ဆောင်ရမည့် လိပ်စာရွေးချယ်ရန်</h3>
+                        <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-1"><span>📍</span> ပို့ဆောင်ရမည့် လိပ်စာ အတိအကျရွေးချယ်ရန်</h3>
                         
                         <div class="space-y-3">
                             <div>
                                 <label class="block text-xs text-gray-500 mb-1">တိုင်းဒေသကြီး / ပြည်နယ်</label>
-                                <select id="region-select" onchange="updateTownships()" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none">
-                                    <option value="">-- ရွေးချယ်ပါ --</option>
+                                <select id="sel-state" onchange="updateDistricts()" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
+                                    <option value="">-- ဒေတာရယူနေပါသည်... --</option>
                                 </select>
                             </div>
                             
                             <div>
+                                <label class="block text-xs text-gray-500 mb-1">ခရိုင်</label>
+                                <select id="sel-district" onchange="updateTownships()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
+                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
+                                </select>
+                            </div>
+
+                            <div>
                                 <label class="block text-xs text-gray-500 mb-1">မြို့နယ်</label>
-                                <select id="township-select" onchange="updateWards()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none disabled:bg-gray-100 disabled:text-gray-400">
-                                    <option value="">-- ရှေးဦးစွာ တိုင်း/ပြည်နယ် ရွေးပါ --</option>
+                                <select id="sel-township" onchange="updateTracts()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
+                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs text-gray-500 mb-1">မြို့ပေါ် / ကျေးရွာအုပ်စု</label>
+                                <select id="sel-tract" onchange="updateVillages()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
+                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
                                 </select>
                             </div>
 
                             <div>
                                 <label class="block text-xs text-gray-500 mb-1">ရပ်ကွက် / ကျေးရွာ</label>
-                                <select id="ward-select" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all appearance-none disabled:bg-gray-100 disabled:text-gray-400">
-                                    <option value="">-- ရှေးဦးစွာ မြို့နယ် ရွေးပါ --</option>
+                                <select id="sel-village" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
+                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
                                 </select>
                             </div>
 
                             <div>
-                                <label class="block text-xs text-gray-500 mb-1">အိမ်အမှတ် နှင့် လမ်းအမည်</label>
-                                <input type="text" id="street-input" placeholder="ဥပမာ - အမှတ် (၁၅)၊ ဗိုလ်ချုပ်လမ်း..." class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                                <label class="block text-xs text-gray-500 mb-1">အိမ်အမှတ် နှင့် လမ်းအမည် (Optional)</label>
+                                <input type="text" id="input-street" placeholder="ဥပမာ - အမှတ်(၁)၊ ဗိုလ်ချုပ်လမ်း..." class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                             </div>
 
                             <div>
                                 <label class="block text-xs text-gray-500 mb-1">ဆက်သွယ်ရန် ဖုန်းနံပါတ်</label>
-                                <input type="tel" id="phone-input" placeholder="ဥပမာ - 09123456789" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                                <input type="tel" id="input-phone" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                             </div>
                         </div>
                     </div>
+
                     <label class="block text-xs font-bold text-gray-600 mb-1.5 ml-1">ငွေလွှဲပြေစာ အမှတ် (Tx ID)</label>
-                    <input type="text" id="checkout-tx" placeholder="နောက်ဆုံးဂဏန်း ၆ လုံး (သို့) ငွေလွှဲသူအမည်..." class="w-full p-3 mb-6 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all">
+                    <input type="text" id="checkout-tx" placeholder="ဂဏန်း ၆ လုံး..." class="w-full p-3 mb-6 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                     
-                    <button onclick="checkoutCart()" class="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white py-4 rounded-xl font-bold transition-all shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] text-lg flex justify-center items-center gap-2">
-                        <span>အတည်ပြုပြီး အော်ဒါတင်မည်</span>
+                    <button onclick="checkoutCart()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold transition-all text-lg flex justify-center items-center gap-2">
+                        အတည်ပြုပြီး အော်ဒါတင်မည်
                     </button>
                 </div>
             </div>
@@ -485,7 +491,7 @@ async def serve_frontend():
         </div>
         
         <div id="orders-tab" class="tab-content hidden p-4">
-            <div class="flex bg-gray-200 p-1 rounded-xl mb-4 shadow-inner">
+            <div class="flex bg-gray-200 p-1 rounded-xl mb-4">
                 <button onclick="switchVendorTab('dash')" id="v-tab-dash" class="flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800 transition-all">အော်ဒါများ</button>
                 <button onclick="switchVendorTab('prods')" id="v-tab-prods" class="flex-1 py-2 rounded-lg text-sm font-bold text-gray-500 hover:text-gray-700 transition-all">ပစ္စည်း စီမံရန်</button>
             </div>
@@ -500,81 +506,87 @@ async def serve_frontend():
             const initData = tg.initData; 
             let allProducts = [], currentCategory = 'All', cart = [];
             let searchTimeout = null;
+            let mmData = {}; 
 
             // ==========================================
-            // 📍 MYANMAR LOCATION DATA (Dropdown တွက်)
+            // 📍 DYNAMIC LOCATION FETCH & RENDER LOGIC
             // ==========================================
-            const mmLocations = {
-                "ရန်ကုန်တိုင်းဒေသကြီး": {
-                    "ကမာရွတ်မြို့နယ်": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်", "အမှတ်(၃) ရပ်ကွက်", "ဆင်မလိုက်ရပ်ကွက်"],
-                    "လှိုင်မြို့နယ်": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်", "ဘူတာရုံရပ်ကွက်"],
-                    "စမ်းချောင်းမြို့နယ်": ["မြေနီကုန်း", "ရှင်စောပု", "မုန့်လက်ဆောင်းကုန်း", "ကျွန်းတော"],
-                    "လှည်းကူးမြို့နယ်": ["မြို့မရပ်ကွက်", "ဒါးပိန်ကျေးရွာ", "ဖောင်ကြီးကျေးရွာ"]
-                },
-                "မန္တလေးတိုင်းဒေသကြီး": {
-                    "ချမ်းအေးသာစံမြို့နယ်": ["မြို့မ", "ပတ်ကုန်း", "ဟေမာဇလ"],
-                    "မဟာအောင်မြေမြို့နယ်": ["မဟာမြိုင်", "စိန်ပန်း", "တံခွန်တိုင်"],
-                    "ပြင်ဦးလွင်မြို့နယ်": ["ရပ်ကွက်ကြီး(၁)", "ရပ်ကွက်ကြီး(၂)", "အနီးစခန်းကျေးရွာ", "ပွဲကောက်ကျေးရွာ"]
-                },
-                "ရှမ်းပြည်နယ်": {
-                    "တောင်ကြီးမြို့နယ်": ["ကျောင်းကြီးစု", "ကံသာ", "မြို့မ", "အေးသာယာ"],
-                    "လားရှိုးမြို့နယ်": ["ရပ်ကွက်(၁)", "ရပ်ကွက်(၂)", "ရပ်ကွက်(၃)", "ရပ်ကွက်(၄)"]
-                },
-                "ပဲခူးတိုင်းဒေသကြီး": {
-                    "ပဲခူးမြို့နယ်": ["ဟင်္သာသာ", "ကလျာဏီ", "ဥဿာမြို့သစ်"],
-                    "တောင်ငူမြို့နယ်": ["မြို့မ(၁)", "မြို့မ(၂)", "ကေတုမတီ"]
-                },
-                "ဧရာဝတီတိုင်းဒေသကြီး": {
-                    "ပုသိမ်မြို့နယ်": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်", "ရွှေမုဋ္ဌော"],
-                    "ဟင်္သာတမြို့နယ်": ["တာကလေး", "မြို့မ", "နတ်မော်"]
+            async function fetchLocationData() {
+                try {
+                    const res = await fetch('/api/locations');
+                    mmData = await res.json();
+                    initLocations();
+                } catch (error) {
+                    console.error("Error loading location data:", error);
+                    document.getElementById("sel-state").innerHTML = '<option value="">-- ဒေတာ ရယူရန် အခက်အခဲဖြစ်နေပါသည် --</option>';
                 }
-            };
+            }
 
-            function initLocationSelectors() {
-                const regionSelect = document.getElementById("region-select");
-                regionSelect.innerHTML = '<option value="">-- တိုင်း/ပြည်နယ် ရွေးပါ --</option>';
-                for (let region in mmLocations) {
-                    regionSelect.innerHTML += `<option value="${region}">${region}</option>`;
+            function initLocations() {
+                const stateSel = document.getElementById("sel-state");
+                stateSel.innerHTML = '<option value="">-- ရွေးချယ်ပါ --</option>';
+                for (let state in mmData) stateSel.innerHTML += `<option value="${state}">${state}</option>`;
+            }
+
+            function updateDistricts() {
+                const state = document.getElementById("sel-state").value;
+                const distSel = document.getElementById("sel-district");
+                resetDropdowns(["sel-district", "sel-township", "sel-tract", "sel-village"]);
+
+                if (state && mmData[state]) {
+                    distSel.disabled = false;
+                    for (let district in mmData[state]) distSel.innerHTML += `<option value="${district}">${district}</option>`;
                 }
             }
 
             function updateTownships() {
-                const region = document.getElementById("region-select").value;
-                const townshipSelect = document.getElementById("township-select");
-                const wardSelect = document.getElementById("ward-select");
-                
-                townshipSelect.innerHTML = '<option value="">-- မြို့နယ် ရွေးပါ --</option>';
-                wardSelect.innerHTML = '<option value="">-- ရှေးဦးစွာ မြို့နယ် ရွေးပါ --</option>';
-                wardSelect.disabled = true;
+                const state = document.getElementById("sel-state").value;
+                const district = document.getElementById("sel-district").value;
+                const tspSel = document.getElementById("sel-township");
+                resetDropdowns(["sel-township", "sel-tract", "sel-village"]);
 
-                if (region && mmLocations[region]) {
-                    townshipSelect.disabled = false;
-                    for (let township in mmLocations[region]) {
-                        townshipSelect.innerHTML += `<option value="${township}">${township}</option>`;
-                    }
-                } else {
-                    townshipSelect.disabled = true;
+                if (state && district && mmData[state][district]) {
+                    tspSel.disabled = false;
+                    for (let tsp in mmData[state][district]) tspSel.innerHTML += `<option value="${tsp}">${tsp}</option>`;
                 }
             }
 
-            function updateWards() {
-                const region = document.getElementById("region-select").value;
-                const township = document.getElementById("township-select").value;
-                const wardSelect = document.getElementById("ward-select");
-                
-                wardSelect.innerHTML = '<option value="">-- ရပ်ကွက် / ကျေးရွာ ရွေးပါ --</option>';
+            function updateTracts() {
+                const state = document.getElementById("sel-state").value;
+                const district = document.getElementById("sel-district").value;
+                const tsp = document.getElementById("sel-township").value;
+                const tractSel = document.getElementById("sel-tract");
+                resetDropdowns(["sel-tract", "sel-village"]);
 
-                if (region && township && mmLocations[region][township]) {
-                    wardSelect.disabled = false;
-                    mmLocations[region][township].forEach(ward => {
-                        wardSelect.innerHTML += `<option value="${ward}">${ward}</option>`;
+                if (state && district && tsp && mmData[state][district][tsp]) {
+                    tractSel.disabled = false;
+                    for (let tract in mmData[state][district][tsp]) tractSel.innerHTML += `<option value="${tract}">${tract}</option>`;
+                }
+            }
+
+            function updateVillages() {
+                const state = document.getElementById("sel-state").value;
+                const district = document.getElementById("sel-district").value;
+                const tsp = document.getElementById("sel-township").value;
+                const tract = document.getElementById("sel-tract").value;
+                const villageSel = document.getElementById("sel-village");
+                resetDropdowns(["sel-village"]);
+
+                if (state && district && tsp && tract && mmData[state][district][tsp][tract]) {
+                    villageSel.disabled = false;
+                    mmData[state][district][tsp][tract].forEach(v => {
+                        villageSel.innerHTML += `<option value="${v}">${v}</option>`;
                     });
-                } else {
-                    wardSelect.disabled = true;
                 }
             }
-            // ==========================================
 
+            function resetDropdowns(ids) {
+                ids.forEach(id => {
+                    const el = document.getElementById(id);
+                    el.innerHTML = '<option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>';
+                    el.disabled = true;
+                });
+            }
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -589,23 +601,17 @@ async def serve_frontend():
 
             async function initApp() {
                 tg.expand(); tg.ready();
-                initLocationSelectors(); // Initialize Location UI
+                fetchLocationData(); 
 
                 try {
                     const res = await apiFetch('/api/auth');
                     const data = await res.json();
                     document.getElementById('display-name').innerText = data.user.name;
-                    
-                    // Populate previously saved phone number if exists
-                    if(data.user.phone) {
-                        document.getElementById('phone-input').value = data.user.phone;
-                    }
-                    
+                    if(data.user.phone) document.getElementById('input-phone').value = data.user.phone;
                     if(data.payment_info) {
                         document.getElementById('pay-kpay').innerText = data.payment_info.kpay;
                         document.getElementById('pay-wave').innerText = data.payment_info.wave;
                     }
-
                     if (['vendor', 'admin'].includes(data.user.role)) document.getElementById('btn-orders').classList.remove('hidden');
                     loadProducts();
                 } catch (e) { showToast("Authentication Failed."); }
@@ -629,27 +635,20 @@ async def serve_frontend():
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`);
                 const data = await res.json();
                 allProducts = data.products;
-                
                 if(query === "") {
                     let catsHTML = `<button onclick="filterCategory('All')" class="cat-chip ${currentCategory==='All'?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">အားလုံး</button>`;
-                    data.categories.forEach(c => {
-                        catsHTML += `<button onclick="filterCategory('${c}')" class="cat-chip ${currentCategory===c?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">${c}</button>`;
-                    });
+                    data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="cat-chip ${currentCategory===c?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">${c}</button>`);
                     document.getElementById('category-container').innerHTML = catsHTML;
                 }
                 renderProducts(allProducts);
             }
 
-            function filterCategory(cat) {
+            function filterCategory(cat) { 
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 currentCategory = cat; document.getElementById('search-box').value = "";
-                loadProducts();
+                loadProducts(); 
             }
-
-            function autoSearch() {
-                clearTimeout(searchTimeout);
-                searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400);
-            }
+            function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
 
             function renderProducts(products) {
                 if(products.length === 0) {
@@ -678,7 +677,7 @@ async def serve_frontend():
 
             function addToCart(id, name, price, maxStock) { 
                 let existing = cart.find(i => i.id === id);
-                if(existing) { if (existing.qty < maxStock) existing.qty += 1; else return showToast("လက်ကျန် မလုံလောက်ပါ။"); } 
+                if(existing) { if(existing.qty < maxStock) existing.qty++; else return showToast("လက်ကျန် မလုံလောက်ပါ။"); } 
                 else cart.push({id, name, price, qty: 1, maxStock});
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); 
                 updateCartBadge(); showToast("ခြင်းထဲရောက်ပါပြီ"); 
@@ -686,8 +685,8 @@ async def serve_frontend():
             
             function updateCartBadge() { 
                 const b = document.getElementById('cart-count'); 
-                let t = cart.reduce((s, i) => s + i.qty, 0); b.innerText = t; 
-                t > 0 ? b.classList.remove('hidden') : b.classList.add('hidden'); 
+                let t = cart.reduce((s, i) => s + i.qty, 0); 
+                b.innerText = t; t > 0 ? b.classList.remove('hidden') : b.classList.add('hidden'); 
             }
             
             function renderCart() {
@@ -696,7 +695,6 @@ async def serve_frontend():
                     document.getElementById('cart-content-wrapper').classList.add('hidden');
                     return;
                 }
-                
                 document.getElementById('cart-empty-state').classList.add('hidden');
                 document.getElementById('cart-content-wrapper').classList.remove('hidden');
 
@@ -704,7 +702,7 @@ async def serve_frontend():
                 document.getElementById('cart-items').innerHTML = cart.map((i, index) => {
                     total += (i.price * i.qty);
                     return `
-                    <div class="flex justify-between items-center bg-white p-3.5 rounded-2xl border border-gray-100 shadow-sm">
+                    <div class="flex justify-between items-center bg-white p-3.5 rounded-2xl border border-gray-100 shadow-sm mb-3">
                         <div class="flex-1 pr-2">
                             <div class="text-sm font-bold text-gray-800 line-clamp-1">${i.name}</div>
                             <div class="text-blue-600 font-bold mt-1 text-[15px]">${(i.price).toLocaleString()} Ks</div>
@@ -728,35 +726,29 @@ async def serve_frontend():
             }
 
             async function checkoutCart() {
-                if(cart.length === 0) return;
-                
-                // Get structured address data
-                const region = document.getElementById('region-select').value;
-                const township = document.getElementById('township-select').value;
-                const ward = document.getElementById('ward-select').value;
-                const street = document.getElementById('street-input').value.trim();
-                const phone = document.getElementById('phone-input').value.trim();
+                const state = document.getElementById('sel-state').value;
+                const district = document.getElementById('sel-district').value;
+                const tsp = document.getElementById('sel-township').value;
+                const tract = document.getElementById('sel-tract').value;
+                const village = document.getElementById('sel-village').value;
+                const street = document.getElementById('input-street').value.trim();
+                const phone = document.getElementById('input-phone').value.trim();
                 const tx_id = document.getElementById('checkout-tx').value.trim();
 
-                if(!region || !township || !ward || !street || !phone) {
-                    return showToast("လိပ်စာနှင့် ဖုန်းနံပါတ် အချက်အလက်များကို အပြည့်အစုံ ဖြည့်ပေးပါ။");
-                }
-                if(!tx_id) return showToast("ငွေလွှဲပြေစာ အမှတ် (Tx ID) ထည့်သွင်းပေးပါ။");
+                if(!state || !district || !tsp || !tract || !village || !phone) return showToast("လိပ်စာ အဆင့် ၅ ဆင့်နှင့် ဖုန်းနံပါတ်ကို ပြည့်စုံစွာ ရွေးချယ်ပေးပါ။");
+                if(!tx_id) return showToast("ငွေလွှဲပြေစာ အမှတ် (Tx ID) ထည့်ပါ။");
 
-                // Compile final address string
-                const compiledAddress = `${street}၊ ${ward}၊ ${township}၊ ${region}။ (ဖုန်း - ${phone})`;
+                let compiledAddr = `${village}၊ ${tract}၊ ${tsp}၊ ${district}၊ ${state}။`;
+                if(street) compiledAddr = `${street}၊ ` + compiledAddr;
+                compiledAddr += ` (ဖုန်း: ${phone})`;
 
                 tg.MainButton.showProgress();
                 try {
-                    const payload = { 
-                        transaction_id: tx_id, 
-                        address: compiledAddress, 
-                        phone: phone,
-                        cart: cart.map(i=>({id:i.id, qty:i.qty})) 
-                    };
+                    const payload = { transaction_id: tx_id, address: compiledAddr, phone: phone, cart: cart.map(i=>({id:i.id, qty:i.qty})) };
                     const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payload) });
                     if(res.ok) { 
-                        clearCart(); document.getElementById('checkout-tx').value = '';
+                        clearCart(); 
+                        document.getElementById('checkout-tx').value = '';
                         showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
                         showTab('history-tab', 'btn-history'); 
                     } else { const err = await res.json(); showToast(err.detail || "Error Occurred"); }
