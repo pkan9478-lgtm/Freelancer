@@ -1,16 +1,22 @@
-FROM python:3.11-slim
+version: '3.8'
 
-WORKDIR /app
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - BOT_TOKEN=YOUR_BOT_TOKEN_HERE
+      - WEBAPP_URL=https://your-app.com
+      - ADMIN_TELEGRAM_ID=YOUR_TELEGRAM_ID
+      - GROQ_API_KEY=YOUR_GROQ_API_KEY
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y gcc python3-dev && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-# Render port
-EXPOSE 8000
-
-CMD ["python", "bot.py"]
+  redis:
+    image: redis:alpine
+    # Redis ကို RAM 50MB သာ သုံးရန် ကန့်သတ်ထားသည်
+    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
