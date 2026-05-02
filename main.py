@@ -4,6 +4,7 @@ import hashlib
 import json
 import threading
 import datetime
+import time
 import requests
 from urllib.parse import parse_qs
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
@@ -256,7 +257,6 @@ def handle_cms_photo(message):
             parts = caption.split("-")
             ai_data["name"] = parts[0].strip() # အမည်ကို အတိအကျ ယူမည်
             try:
-                # ဈေးနှုန်းတွင် ပါလာနိုင်သော Ks, ks, ကော်မာ များကို ရှင်းလင်းမည်
                 clean_price = parts[1].strip().lower().replace("ks", "").replace(",", "").strip()
                 ai_data["price"] = float(clean_price)
             except: pass
@@ -298,10 +298,10 @@ async def serve_frontend():
             
             /* 🌟 IMAGE FIX: ပုံကို ဖိနှိပ်ပါက Menu များ မပေါ်လာစေရန် */
             img.product-img {
-                -webkit-touch-callout: none; /* Disable iOS/Android context menu */
+                -webkit-touch-callout: none;
                 -webkit-user-select: none;
                 user-select: none;
-                pointer-events: none; /* Make image completely unclickable */
+                pointer-events: none;
             }
 
             #toast { visibility: hidden; min-width: 250px; background-color: #333; color: #fff; text-align: center; border-radius: 8px; padding: 12px; position: fixed; z-index: 50; left: 50%; bottom: 30px; transform: translateX(-50%); font-size: 14px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
@@ -381,7 +381,7 @@ async def serve_frontend():
             function checkEnter(event) {
                 if (event.key === 'Enter') {
                     searchProducts();
-                    event.target.blur(); // Keyboard အောက်ဆင်းသွားစေရန်
+                    event.target.blur(); 
                 }
             }
 
@@ -531,6 +531,15 @@ async def serve_frontend():
 
 if __name__ == "__main__":
     import uvicorn
+    
+    # 🌟 ERROR 409 FIX: Webhook အဟောင်းများရှိပါက အရင်ဖျက်ပစ်မည် 
+    try:
+        bot.remove_webhook()
+        print("✅ Webhook removed successfully. Starting polling...")
+        time.sleep(1) # Telegram Server ကို အနားပေးရန် ၁ စက္ကန့် စောင့်မည်
+    except Exception as e:
+        print(f"Webhook remove error: {e}")
+
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
