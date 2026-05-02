@@ -16,7 +16,6 @@ services:
 
   redis:
     image: redis:alpine
-    # Redis ကို RAM 50MB သာ သုံးရန် ကန့်သတ်ထားသည်
     command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
