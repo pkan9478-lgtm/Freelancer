@@ -1,15 +1,24 @@
 services:
   - type: web
-    name: phogo-ultra-bot
+    name: ai-agency-mall
     env: docker
     plan: free
-    healthCheckPath: /
     envVars:
-      - key: TELEGRAM_TOKEN
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
+      - key: ADMIN_TELEGRAM_ID
         sync: false
       - key: GROQ_API_KEY
         sync: false
-      - key: ADMIN_ID
-        sync: false
-      - key: PORT
-        value: "8000"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: mall-redis-cache
+          envVarKey: REDIS_URL
+
+  - type: redis
+    name: mall-redis-cache
+    plan: free
+    maxmemoryPolicy: allkeys-lru
