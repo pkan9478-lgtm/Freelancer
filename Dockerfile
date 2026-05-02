@@ -1,22 +1,15 @@
-version: '3.8'
+# ပေါ့ပါးသော Python Image ကို အသုံးပြုခြင်း
+FROM python:3.10-slim
 
-services:
-  web:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - BOT_TOKEN=YOUR_BOT_TOKEN_HERE
-      - WEBAPP_URL=https://your-app.com
-      - ADMIN_TELEGRAM_ID=YOUR_TELEGRAM_ID
-      - GROQ_API_KEY=YOUR_GROQ_API_KEY
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+WORKDIR /app
 
-  redis:
-    image: redis:alpine
-    # Redis ကို RAM 50MB သာ သုံးရန် ကန့်သတ်ထားသည်
-    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
+# Cache မကျန်စေရန် --no-cache-dir ဖြင့် Install လုပ်ခြင်း
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PORT=8000
+
+# 512MB RAM အတွက် Worker (1) ခုတည်းသာ အသုံးပြုရန်
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"]
