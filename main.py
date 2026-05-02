@@ -25,9 +25,10 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
+# Platform Payment Info (Escrow/Admin Default)
 PAYMENT_INFO = {
-    "kpay": "09123456789 (U Ba)",
-    "wave": "09123456789 (U Ba)"
+    "kpay": "09123456789 (Digital Mall)",
+    "wave": "09123456789 (Digital Mall)"
 }
 
 bot = TeleBot(BOT_TOKEN)
@@ -139,35 +140,27 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }, "payment_info": PAYMENT_INFO
     }
 
-# 📍 LOCATION API (Auto Create & Fetch JSON)
+# 📍 5-TIER LOCATION API (Auto Create & Fetch JSON)
 @app.get("/api/locations")
 def get_locations():
     file_path = os.path.join(DATA_DIR, "locations.json")
     if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
     else:
         sample_data = {
             "ရန်ကုန်တိုင်းဒေသကြီး": {
                 "ရန်ကုန်အနောက်ပိုင်းခရိုင်": {
-                    "ကမာရွတ်မြို့နယ်": {
-                        "ကမာရွတ်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်", "အမှတ်(၃) ရပ်ကွက်"]
-                    },
-                    "လှိုင်မြို့နယ်": {
-                        "လှိုင်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "ဘူတာရုံရပ်ကွက်"]
-                    }
+                    "ကမာရွတ်မြို့နယ်": { "ကမာရွတ်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်"] },
+                    "လှိုင်မြို့နယ်": { "လှိုင်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "ဘူတာရုံရပ်ကွက်"] }
                 }
             },
             "မန္တလေးတိုင်းဒေသကြီး": {
                 "မန္တလေးခရိုင်": {
-                    "ချမ်းအေးသာစံမြို့နယ်": {
-                        "ချမ်းအေးသာစံ(မြို့ပေါ်)": ["မြို့မ", "ပတ်ကုန်း", "ဟေမာဇလ"]
-                    }
+                    "ချမ်းအေးသာစံမြို့နယ်": { "ချမ်းအေးသာစံ(မြို့ပေါ်)": ["မြို့မ", "ပတ်ကုန်း"] }
                 }
             }
         }
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(sample_data, f, ensure_ascii=False, indent=4)
+        with open(file_path, "w", encoding="utf-8") as f: json.dump(sample_data, f, ensure_ascii=False, indent=4)
         return sample_data
 
 @app.get("/api/products")
@@ -209,8 +202,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             
     if address and user.default_address != address: user.default_address = address
     if phone and user.phone != phone: user.phone = phone
-
     db.commit()
+
     try:
         items_str = "\n".join([f"- {n}" for n in ordered_names])
         bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nပို့ဆောင်ရမည့်လိပ်စာ: {address}\nTx ID: `{tx_id}`\n\n_ရောင်းချသူမှ ငွေသွင်းမှတ်တမ်း စစ်ဆေးပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
@@ -234,7 +227,7 @@ def cancel_buyer_order(order_id: int, user: User = Depends(get_current_user), db
     db.commit()
     return {"status": "success"}
 
-# VENDOR ENDPOINTS
+# MULTI-VENDOR ENDPOINTS
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
@@ -286,19 +279,27 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
     return {"status": "success"}
 
 # ==========================================
-# ၅။ AI-POWERED CMS & CHAT BOT
+# ၅။ AI-POWERED CMS & CHAT BOT (Seamless Vendor Onboarding)
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
-    bot.send_message(message.chat.id, f"မင်္ဂလာပါရှင်။ ဖိနပ်၊ အင်္ကျီ စသည်ဖြင့် ရှာဖွေချင်သည့် ပစ္စည်းကို စာရိုက်ပြီး မေးမြန်းနိုင်သလို၊ အောက်ပါခလုတ်ကို နှိပ်၍လည်း ဈေးဝယ်နိုင်ပါသည်။", reply_markup=markup)
+    msg = """မင်္ဂလာပါရှင်။ 
+🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။
+📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** ရောင်းချလိုသည့် ပစ္စည်းဓာတ်ပုံနှင့်တကွ အမည်၊ ဈေးနှုန်းတို့ကို ဤ Chat ထဲသို့ (Caption တပ်၍) တိုက်ရိုက်ပေးပို့လိုက်ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
+    bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['photo'])
 def handle_cms_photo(message):
     db = SessionLocal()
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
-    if not user or user.role not in ["vendor", "admin"]: return db.close()
+    if not user: return db.close()
+
+    # 📌 Feature: Seamlessly Auto-Upgrade normal buyers to Vendors upon first upload
+    if user.role == "buyer":
+        user.role = "vendor"
+        db.commit()
 
     try:
         caption = message.caption or "New Product"
@@ -321,12 +322,12 @@ def handle_cms_photo(message):
         new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id)
         db.add(new_product)
         db.commit()
-        bot.reply_to(message, f"✅ **ပစ္စည်း အလိုအလျောက် တင်ပြီးပါပြီ။**\n\n📌 အမည်: {ai_data['name']}\n💰 ဈေးနှုန်း: {ai_data['price']} Ks\n📦 အရေအတွက်: {ai_data['stock']}\n\n_App ထဲသို့ဝင်၍ အလွယ်တကူ ထပ်မံပြင်ဆင်နိုင်ပါသည်။_", parse_mode="Markdown")
+        bot.reply_to(message, f"✅ **ပစ္စည်း အလိုအလျောက် တင်ပြီးပါပြီ။**\n\n📌 အမည်: {ai_data['name']}\n💰 ဈေးနှုန်း: {ai_data['price']} Ks\n📦 အရေအတွက်: {ai_data['stock']}\n\n_App ထဲသို့ဝင်၍ 'စီမံရန်' Tab တွင် အလွယ်တကူ ထပ်မံပြင်ဆင်နိုင်ပါသည်။_", parse_mode="Markdown")
     except Exception as e: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (Full Dynamic Fetch Version)
+# ၆။ FRONTEND UI (Full Version with "Sell" Button)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -373,14 +374,20 @@ async def serve_frontend():
         </header>
 
         <div class="fixed bottom-0 w-full bg-white border-t flex justify-around text-xs font-medium text-gray-500 z-50 pb-safe shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
-            <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn active flex-1 py-4 flex flex-col items-center gap-1 transition-colors">
-                <span class="text-lg">🏠</span><span>ဈေးဝယ်မည်</span>
+            <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn active flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
+                <span class="text-[20px]">🏠</span><span>ဝယ်မည်</span>
             </button>
-            <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn flex-1 py-4 flex flex-col items-center gap-1 transition-colors">
-                <span class="text-lg">📋</span><span>မှတ်တမ်း</span>
+            
+            <button onclick="triggerSell()" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors relative">
+                <div class="absolute -top-3 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-4 border-white text-2xl pb-1">+</div>
+                <span class="mt-6 font-bold text-blue-600">ရောင်းမည်</span>
             </button>
-            <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn hidden flex-1 py-4 flex flex-col items-center gap-1 transition-colors">
-                <span class="text-lg">⚙️</span><span>စီမံရန်</span>
+
+            <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
+                <span class="text-[20px]">📋</span><span>မှတ်တမ်း</span>
+            </button>
+            <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn hidden flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
+                <span class="text-[20px]">⚙️</span><span>စီမံရန်</span>
             </button>
         </div>
 
@@ -507,6 +514,14 @@ async def serve_frontend():
             let allProducts = [], currentCategory = 'All', cart = [];
             let searchTimeout = null;
             let mmData = {}; 
+
+            // 📌 Feature: Sell Product Trigger (Frictionless Upload)
+            function triggerSell() {
+                if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                tg.showConfirm("ပစ္စည်းရောင်းချရန်အတွက် ဤ App ကိုခေတ္တပိတ်ပြီး၊ Bot Chat ထဲသို့ ရောင်းချလိုသော ပစ္စည်းဓာတ်ပုံနှင့်တကွ အမည်၊ ဈေးနှုန်းများကို (Caption အဖြစ်) ရိုက်ထည့်၍ ပေးပို့လိုက်ပါ။ AI မှ အလိုအလျောက် စာရင်းသွင်းပေးပါမည်။ အခုပဲ App ကိုပိတ်ပြီး ပုံပို့မလား?", function(result) {
+                    if(result) tg.close();
+                });
+            }
 
             // ==========================================
             // 📍 DYNAMIC LOCATION FETCH & RENDER LOGIC
