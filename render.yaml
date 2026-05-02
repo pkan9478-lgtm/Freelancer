@@ -1,21 +1,34 @@
-version: '3.8'
-
 services:
-  web:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - BOT_TOKEN=YOUR_BOT_TOKEN_HERE
-      - WEBAPP_URL=https://your-app.com
-      - ADMIN_TELEGRAM_ID=YOUR_TELEGRAM_ID
-      - GROQ_API_KEY=YOUR_GROQ_API_KEY
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+  # ၁။ Redis Database (ထုတ်ကုန်အချက်အလက်များ မြန်ဆန်စွာ ဆွဲယူရန်)
+  - type: redis
+    name: digital-mall-redis
+    plan: free # Free tier ဖြင့် စတင်နိုင်သည်
+    ipAllowList: [] 
 
-  redis:
-    image: redis:alpine
-    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
+  # ၂။ Web Service (FastAPI + Telegram Bot)
+  - type: web
+    name: digital-mall-bot
+    env: docker
+    plan: free
+    # SQLite ဒေတာများ ဆာဗာ Restart ကျတိုင်း မပျောက်စေရန် Disk ခွဲထုတ်ခြင်း
+    disk:
+      name: sqlite-data
+      mountPath: /app/data
+      sizeGB: 1
+    # Environment Variables များ ချိတ်ဆက်ခြင်း
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: digital-mall-redis
+          property: connectionString
+      - key: DATABASE_URL
+        value: sqlite:////app/data/mall_ai_pro.db
+      - key: BOT_TOKEN
+        sync: false # Render Dashboard တွင် ကိုယ်တိုင်ထည့်ရမည်
+      - key: WEBAPP_URL
+        sync: false # Render Dashboard တွင် ကိုယ်တိုင်ထည့်ရမည်
+      - key: ADMIN_TELEGRAM_ID
+        sync: false # Render Dashboard တွင် ကိုယ်တိုင်ထည့်ရမည်
+      - key: GROQ_API_KEY
+        sync: false # Render Dashboard တွင် ကိုယ်တိုင်ထည့်ရမည်
