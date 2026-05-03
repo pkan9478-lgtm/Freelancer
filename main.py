@@ -27,7 +27,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
-# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ (ပြောင်းလဲအသုံးပြုနိုင်သည်)
+# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ (မိမိအကောင့်များ ပြောင်းထည့်ပါ)
 PAYMENT_INFO = {
     "kpay": "09123456789 (Digital Mall)",
     "wave": "09123456789 (Digital Mall)",
@@ -142,7 +142,6 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }, "payment_info": PAYMENT_INFO
     }
 
-# အလိုအလျောက် လိပ်စာ သိမ်းဆည်းရန်နှင့် Vendor အဖြစ်မြှင့်တင်ရန်
 @app.post("/api/user/address")
 async def update_user_address(req: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = await req.json()
@@ -153,7 +152,7 @@ async def update_user_address(req: Request, user: User = Depends(get_current_use
     return {"status": "success"}
 
 @app.get("/api/products")
-def get_products(category: str = "All", search: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
+def get_products(category: str = "All", search: str = "", skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
     query = db.query(Product)
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
@@ -293,7 +292,7 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
 def start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
-    msg = """မင်္ဂလာပါရှင်။ \n🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။\n📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** Web App ထဲရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း ဖွင့်လှစ်ပါ။ ပြီးပါက ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' ကိုပေးပို့ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
+    msg = """မင်္ဂလာပါရှင်။ \n🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။\n📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** Web App ထဲရှိ 'ရောင်းမည် (+)' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း ဖွင့်လှစ်ပါ။ ပြီးပါက ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' ကိုပေးပို့ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
     bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['photo'])
@@ -301,7 +300,7 @@ def handle_cms_photo(message):
     db = SessionLocal()
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
     if not user or user.role not in ["vendor", "admin"]: 
-        bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ ကုန်တိုက် App အတွင်းရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ သင့်တည်နေရာကို အတည်ပြုပေးပါ။")
+        bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ ကုန်တိုက် App အတွင်းရှိ 'ရောင်းမည် (+)' ခလုတ်ကို အရင်နှိပ်၍ သင့်တည်နေရာကို အတည်ပြုပေးပါ။")
         return db.close()
 
     try:
@@ -387,10 +386,12 @@ async def serve_frontend():
             <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn active flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
                 <span class="text-[20px]">🏠</span><span>ဝယ်မည်</span>
             </button>
-            <button onclick="openSellModal()" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors relative">
-                <div class="absolute -top-3 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-4 border-white text-2xl pb-1">+</div>
-                <span class="mt-6 font-bold text-blue-600">ရောင်းမည်</span>
+            
+            <button onclick="openSellModal()" class="tab-btn flex-1 py-2 flex flex-col items-center justify-center relative z-50 transition-transform active:scale-95">
+                <div class="absolute -top-6 bg-blue-600 text-white w-14 h-14 rounded-full flex items-center justify-center shadow-lg border-4 border-white text-3xl font-light pointer-events-none">+</div>
+                <span class="mt-6 font-bold text-blue-600 text-[11px]">ရောင်းမည်</span>
             </button>
+
             <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
                 <span class="text-[20px]">📋</span><span>မှတ်တမ်း</span>
             </button>
@@ -420,7 +421,7 @@ async def serve_frontend():
                 <button id="btn-confirm-sell" onclick="confirmSellerProfile()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md transition active:bg-blue-700 hidden">
                     အတည်ပြုပြီး ပစ္စည်းတင်မည်
                 </button>
-                <button onclick="closeSellModal()" class="mt-4 text-sm font-bold text-gray-400">ပယ်ဖျက်မည်</button>
+                <button onclick="closeSellModal()" class="mt-4 text-sm font-bold text-gray-400 p-2">ပယ်ဖျက်မည်</button>
             </div>
         </div>
 
@@ -488,7 +489,7 @@ async def serve_frontend():
                         <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ အမှတ် (Tx ID)</label>
                         <input type="text" id="checkout-tx" placeholder="နောက်ဆုံး ဂဏန်း ၆ လုံး..." class="w-full p-3 mb-3 bg-white rounded-lg border border-gray-200 text-sm outline-none">
                         
-                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ ဓာတ်ပုံတင်ရန် (Screenshot)</label>
+                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ ဓာတ်ပုံတင်ရန်</label>
                         <input type="file" id="checkout-receipt" accept="image/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 cursor-pointer bg-white border border-gray-200 rounded-lg p-1 outline-none">
                         
                         <div id="receipt-preview-container" class="hidden mt-3 text-center">
@@ -541,28 +542,39 @@ async def serve_frontend():
                 return fetch(url, { ...options, headers: { 'X-Telegram-Init-Data': initData, 'Content-Type': 'application/json', ...options.headers }});
             }
 
+            // FIXED: Error Handling for Blank Screen
             async function initApp() {
                 tg.expand(); tg.ready();
                 try {
                     const res = await apiFetch('/api/auth');
-                    const data = await res.json();
-                    document.getElementById('display-name').innerText = data.user.name;
-                    if(data.user.phone) {
-                        document.getElementById('checkout-phone').value = data.user.phone;
-                        document.getElementById('seller-phone').value = data.user.phone;
+                    if(res.ok) {
+                        const data = await res.json();
+                        if(data.user) {
+                            document.getElementById('display-name').innerText = data.user.name;
+                            if(data.user.phone) {
+                                document.getElementById('checkout-phone').value = data.user.phone;
+                                document.getElementById('seller-phone').value = data.user.phone;
+                            }
+                            if(data.user.default_address) {
+                                document.getElementById('checkout-address').value = data.user.default_address;
+                                document.getElementById('seller-address').value = data.user.default_address;
+                            }
+                            if(['vendor', 'admin'].includes(data.user.role)) document.getElementById('btn-orders').classList.remove('hidden');
+                        }
+                        if(data.payment_info) {
+                            document.getElementById('pay-kpay').innerText = data.payment_info.kpay;
+                            document.getElementById('pay-wave').innerText = data.payment_info.wave;
+                            document.getElementById('qr-image').src = data.payment_info.qr_url;
+                        }
+                    } else {
+                        document.getElementById('display-name').innerText = "ဧည့်သည်";
                     }
-                    if(data.user.default_address) {
-                        document.getElementById('checkout-address').value = data.user.default_address;
-                        document.getElementById('seller-address').value = data.user.default_address;
-                    }
-                    if(data.payment_info) {
-                        document.getElementById('pay-kpay').innerText = data.payment_info.kpay;
-                        document.getElementById('pay-wave').innerText = data.payment_info.wave;
-                        document.getElementById('qr-image').src = data.payment_info.qr_url;
-                    }
-                    if (['vendor', 'admin'].includes(data.user.role)) document.getElementById('btn-orders').classList.remove('hidden');
-                    loadProducts();
-                } catch (e) { showToast("Authentication Failed."); }
+                } catch (e) { 
+                    console.log("Auth error", e);
+                    document.getElementById('display-name').innerText = "ဧည့်သည်";
+                } finally {
+                    loadProducts(); // Ensure products load even if auth fails
+                }
             }
 
             function showTab(tabId, btnId) {
@@ -633,22 +645,24 @@ async def serve_frontend():
             // ================== PRODUCTS & CART ==================
             async function loadProducts(query = "") {
                 document.getElementById('product-list').innerHTML = '<div class="col-span-2 text-center text-gray-400 py-10">Loading...</div>';
-                const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`);
-                const data = await res.json();
-                allProducts = data.products;
-                if(query === "") {
-                    let catsHTML = `<button onclick="filterCategory('All')" class="cat-chip ${currentCategory==='All'?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">အားလုံး</button>`;
-                    data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="cat-chip ${currentCategory===c?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">${c}</button>`);
-                    document.getElementById('category-container').innerHTML = catsHTML;
-                }
-                renderProducts(allProducts);
+                try {
+                    const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`);
+                    const data = await res.json();
+                    allProducts = data.products;
+                    if(query === "") {
+                        let catsHTML = `<button onclick="filterCategory('All')" class="cat-chip ${currentCategory==='All'?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">အားလုံး</button>`;
+                        data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="cat-chip ${currentCategory===c?'active':''} whitespace-nowrap px-4 py-2 rounded-full border border-gray-200 text-sm font-medium transition-colors bg-white">${c}</button>`);
+                        document.getElementById('category-container').innerHTML = catsHTML;
+                    }
+                    renderProducts(allProducts);
+                } catch(e) { document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center text-gray-400 py-10">ဒေတာရယူ၍မရပါ</div>`; }
             }
 
             function filterCategory(cat) { currentCategory = cat; document.getElementById('search-box').value = ""; loadProducts(); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
 
             function renderProducts(products) {
-                if(products.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center text-gray-400 py-10">ပစ္စည်းမရှိပါ</div>`;
+                if(!products || products.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center text-gray-400 py-10">ပစ္စည်းမရှိပါ</div>`;
                 document.getElementById('product-list').innerHTML = products.map(p => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300?text=No+Image';
                     const isOut = p.stock <= 0;
@@ -661,7 +675,7 @@ async def serve_frontend():
                                 <div class="text-[13px] font-bold text-gray-800 line-clamp-2 leading-tight">${p.name}</div>
                                 <div class="text-blue-600 text-[15px] font-black mt-1.5">${p.price.toLocaleString()} Ks</div>
                             </div>
-                            <button onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price}, ${p.stock})" class="mt-3 w-full ${isOut?'bg-gray-100 text-gray-400':'bg-blue-50 text-blue-700 hover:bg-blue-100'} py-2.5 rounded-xl font-bold text-sm" ${isOut?'disabled':''}>🛒 ထည့်မည်</button>
+                            <button onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price}, ${p.stock})" class="mt-3 w-full ${isOut?'bg-gray-100 text-gray-400':'bg-blue-50 text-blue-700 hover:bg-blue-100'} py-2.5 rounded-xl font-bold text-sm transition-colors" ${isOut?'disabled':''}>🛒 ထည့်မည်</button>
                         </div>
                     </div>`
                 }).join('');
@@ -723,7 +737,6 @@ async def serve_frontend():
                 if(isQR) qrSec.classList.remove('hidden'); else qrSec.classList.add('hidden');
             }
 
-            // Image Preview function
             document.getElementById('checkout-receipt').addEventListener('change', function(e) {
                 if(e.target.files && e.target.files[0]) {
                     const reader = new FileReader();
@@ -737,7 +750,6 @@ async def serve_frontend():
                 }
             });
 
-            // Compress image before sending to save bandwidth
             function compressImageToBase64(file, callback) {
                 const reader = new FileReader();
                 reader.onload = function(e) {
