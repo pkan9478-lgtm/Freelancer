@@ -13,8 +13,8 @@ from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+# V2.0 Update: declarative_base ကို orm အောက်မှ ခေါ်ယူပါသည်
+from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 import redis
 from telebot import TeleBot, types
 
@@ -27,7 +27,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
-# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ (မိမိအကောင့်များ ပြောင်းထည့်ပါ)
+# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ
 PAYMENT_INFO = {
     "kpay": "09123456789 (Digital Mall)",
     "wave": "09123456789 (Digital Mall)",
@@ -542,7 +542,6 @@ async def serve_frontend():
                 return fetch(url, { ...options, headers: { 'X-Telegram-Init-Data': initData, 'Content-Type': 'application/json', ...options.headers }});
             }
 
-            // FIXED: Error Handling for Blank Screen
             async function initApp() {
                 tg.expand(); tg.ready();
                 try {
@@ -573,7 +572,7 @@ async def serve_frontend():
                     console.log("Auth error", e);
                     document.getElementById('display-name').innerText = "ဧည့်သည်";
                 } finally {
-                    loadProducts(); // Ensure products load even if auth fails
+                    loadProducts(); 
                 }
             }
 
@@ -590,7 +589,6 @@ async def serve_frontend():
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
-            // ================== SELLER AUTO-LOCATION ==================
             function openSellModal() {
                 document.getElementById('sell-modal').classList.add('active');
                 if(document.getElementById('seller-address').value !== "") {
@@ -642,7 +640,6 @@ async def serve_frontend():
                 }
             }
 
-            // ================== PRODUCTS & CART ==================
             async function loadProducts(query = "") {
                 document.getElementById('product-list').innerHTML = '<div class="col-span-2 text-center text-gray-400 py-10">Loading...</div>';
                 try {
@@ -730,7 +727,6 @@ async def serve_frontend():
                 updateCartBadge(); renderCart();
             }
 
-            // ================== CHECKOUT & IMAGE UPLOAD ==================
             function togglePaymentUI() {
                 const isQR = document.getElementById('pay-qr').checked;
                 const qrSec = document.getElementById('qr-payment-section');
@@ -806,7 +802,6 @@ async def serve_frontend():
 
             function clearCart() { cart = []; updateCartBadge(); renderCart(); }
 
-            // ================== BUYER HISTORY ==================
             const statusNames = { 'pending': 'စစ်ဆေးဆဲ ⏳', 'approved': 'ထုပ်ပိုးဆဲ 📦', 'shipped': 'ပို့ဆောင်လိုက်ပြီ 🚚', 'delivered': 'ရောက်ရှိပါပြီ ✅', 'cancelled': 'ပယ်ဖျက်လိုက်သည် ❌' };
             
             async function loadBuyerOrders() {
@@ -836,7 +831,6 @@ async def serve_frontend():
                 if(res.ok) { showToast("အော်ဒါ ဖျက်သိမ်းပြီးပါပြီ။"); loadBuyerOrders(); }
             }
             
-            // ================== VENDOR MANAGEMENT ==================
             function switchVendorTab(tab) {
                 document.getElementById('v-tab-dash').className = tab === 'dash' ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800 transition-all' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500 transition-all';
                 document.getElementById('v-tab-prods').className = tab === 'prods' ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800 transition-all' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500 transition-all';
