@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Full Locations)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (With Edit Features)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -388,7 +388,21 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
-    return [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock} for p in products]
+    # ထပ်မံထည့်သွင်းထားသော image_file_id
+    return [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock, "img":p.image_file_id} for p in products]
+
+# ✅ ထပ်မံဖြည့်စွက်ထားသော Product Edit API
+@app.put("/api/vendor/products/{product_id}")
+async def edit_product(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    data = await request.json()
+    product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
+    if not product: raise HTTPException(status_code=404, detail="ပစ္စည်းမရှိပါ")
+    
+    product.name = data.get("name", product.name)
+    product.price = float(data.get("price", product.price))
+    product.stock = int(data.get("stock", product.stock))
+    db.commit()
+    return {"status": "success"}
 
 @app.put("/api/vendor/products/{product_id}/stock")
 async def update_product_stock(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -534,6 +548,29 @@ async def serve_frontend():
                     <button onclick="document.getElementById('noti-modal').classList.remove('active')" class="text-gray-400 font-bold text-2xl">&times;</button>
                 </div>
                 <div id="noti-list" class="space-y-3 pb-5 min-h-[200px]"></div>
+            </div>
+        </div>
+
+        <div id="edit-product-modal" class="modal-overlay">
+            <div class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl relative">
+                <button onclick="closeEditModal()" class="absolute top-3 right-4 text-gray-400 font-bold text-xl">&times;</button>
+                <h2 class="font-bold text-lg mb-4 text-gray-800">ပစ္စည်း အချက်အလက် ပြင်မည်</h2>
+                <input type="hidden" id="edit-prod-id">
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">ပစ္စည်း အမည်</label>
+                        <input type="text" id="edit-prod-name" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">ဈေးနှုန်း (Ks)</label>
+                        <input type="number" id="edit-prod-price" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1">လက်ကျန် (Stock)</label>
+                        <input type="number" id="edit-prod-stock" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                    </div>
+                </div>
+                <button onclick="saveEditProduct()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md mt-5">သိမ်းဆည်းမည်</button>
             </div>
         </div>
 
@@ -769,21 +806,77 @@ async def serve_frontend():
                 }).join('');
             }
             
-            // VENDOR DASHBOARD
+            // ✅ VENDOR DASHBOARD (WITH PRODUCT EDITING)
             function switchVendorTab(tab) {
                 ['dash', 'prods', 'profile'].forEach(t => { document.getElementById(`v-tab-${t}`).className = tab === t ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500'; document.getElementById(`vendor-${t}-view`).style.display = tab === t ? 'block' : 'none'; });
                 if(tab === 'dash') loadVendorOrders(); else if(tab === 'prods') loadVendorProducts();
             }
+            
             async function loadVendorOrders() {
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map(o => `<div class="bg-white p-3 rounded-xl shadow-sm border mb-2"><div class="flex justify-between mb-2"><div class="text-sm font-bold">${o.name} (x${o.qty})</div><div class="text-[10px] uppercase font-bold px-2 py-1 rounded bg-gray-100 text-gray-600">${o.status}</div></div><div class="bg-gray-50 p-2 rounded text-xs text-gray-700 mb-2 border"><div>ဝယ်သူ: ${o.buyer}</div><div>စနစ်: ${o.pay === 'COD' ? '🏠 COD' : '💳 TxID: <b>'+o.tx+'</b>'}</div><div>လိပ်စာ: ${o.addr}</div></div><select onchange="updateOrderStatus(${o.id}, this.value)" class="w-full bg-blue-50 border border-blue-200 text-blue-800 p-2 rounded text-xs font-bold outline-none"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`).join('');
             }
+            
             async function updateOrderStatus(id, st) { await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); showToast("အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); loadVendorOrders(); }
+            
+            let vendorProducts = [];
             async function loadVendorProducts() {
-                const res = await apiFetch('/api/vendor/products'); const prods = await res.json();
-                document.getElementById('vendor-product-list').innerHTML = prods.map(p => `<div class="bg-white p-3 rounded-xl shadow-sm border flex justify-between items-center mb-2"><div><div class="text-sm font-bold">${p.name}</div><div class="text-blue-600 text-xs font-bold">${p.price.toLocaleString()} Ks | Stock: ${p.stock}</div></div><div class="flex gap-2"><button onclick="updateStock(${p.id}, ${p.stock + 5})" class="bg-gray-100 px-2 py-1 rounded text-xs font-bold">+5</button><button onclick="if(confirm('ဖျက်မှာသေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="text-red-500 bg-red-50 px-2 py-1 rounded text-xs font-bold">ဖျက်မည်</button></div></div>`).join('');
+                const res = await apiFetch('/api/vendor/products'); vendorProducts = await res.json();
+                document.getElementById('vendor-product-list').innerHTML = vendorProducts.map(p => {
+                    const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300';
+                    return `
+                    <div class="bg-white p-3 rounded-xl shadow-sm border flex gap-3 items-center mb-2">
+                        <img src="${imgSrc}" class="w-16 h-16 object-cover rounded shadow-sm border">
+                        <div class="flex-1">
+                            <div class="text-sm font-bold text-gray-800 line-clamp-1">${p.name}</div>
+                            <div class="text-blue-600 text-xs font-bold my-0.5">${p.price.toLocaleString()} Ks</div>
+                            <div class="text-[10px] text-gray-500 font-bold bg-gray-100 inline-block px-1.5 rounded">Stock: ${p.stock}</div>
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="bg-blue-50 text-blue-600 px-3 py-1 rounded text-[11px] font-bold border border-blue-100">ပြင်မည်</button>
+                            <button onclick="if(confirm('ဖျက်မှာသေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="text-red-500 bg-red-50 px-3 py-1 rounded text-[11px] font-bold border border-red-100">ဖျက်မည်</button>
+                        </div>
+                    </div>`
+                }).join('');
             }
-            async function updateStock(id, ns) { await apiFetch(`/api/vendor/products/${id}/stock`, { method: 'PUT', body: JSON.stringify({stock: ns}) }); loadVendorProducts(); }
+
+            // Edit Product Functions
+            function openEditModal(prod) {
+                document.getElementById('edit-prod-id').value = prod.id;
+                document.getElementById('edit-prod-name').value = prod.name;
+                document.getElementById('edit-prod-price').value = prod.price;
+                document.getElementById('edit-prod-stock').value = prod.stock;
+                document.getElementById('edit-product-modal').classList.add('active');
+            }
+
+            function closeEditModal() {
+                document.getElementById('edit-product-modal').classList.remove('active');
+            }
+
+            async function saveEditProduct() {
+                const id = document.getElementById('edit-prod-id').value;
+                const name = document.getElementById('edit-prod-name').value.trim();
+                const price = document.getElementById('edit-prod-price').value;
+                const stock = document.getElementById('edit-prod-stock').value;
+
+                if(!name || !price || !stock) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
+
+                tg.MainButton.showProgress();
+                const res = await apiFetch(`/api/vendor/products/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ name: name, price: price, stock: stock })
+                });
+                tg.MainButton.hideProgress();
+
+                if(res.ok) {
+                    showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ");
+                    closeEditModal();
+                    loadVendorProducts();
+                    loadProducts(); // Update shop view as well
+                } else {
+                    showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။");
+                }
+            }
 
             window.onload = initApp;
         </script>
