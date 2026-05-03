@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Digital Goods & Chat)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Cover Hidden Features)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -81,7 +81,6 @@ class Product(Base):
     vendor_id = Column(Integer, ForeignKey("users.id")) 
     vendor = relationship("User")
     
-    # 📌 E-book & Audio Book အတွက် Model သစ်
     product_type = Column(String, default="physical") 
     digital_file_id = Column(String, default="")
 
@@ -117,14 +116,10 @@ class ChatMessage(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# 📌 Auto-Migration Hack for existing databases
+# Auto-Migration Hacks
 try:
     with engine.connect() as conn:
         conn.execute(text("ALTER TABLE products ADD COLUMN product_type VARCHAR DEFAULT 'physical'"))
-        conn.commit()
-except: pass
-try:
-    with engine.connect() as conn:
         conn.execute(text("ALTER TABLE products ADD COLUMN digital_file_id VARCHAR DEFAULT ''"))
         conn.commit()
 except: pass
@@ -135,7 +130,7 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-# ၃။ SECURE AUTHENTICATION & WEBSOCKET MANAGER
+# ၃။ SECURE AUTHENTICATION & WEBSOCKET
 # ==========================================
 def verify_tg_data(tg_data_str: str, db: Session):
     try:
@@ -155,8 +150,7 @@ def verify_tg_data(tg_data_str: str, db: Session):
             db.commit()
             db.refresh(db_user)
         return db_user
-    except:
-        return None
+    except: return None
 
 def get_current_user(x_telegram_init_data: str = Header(None), db: Session = Depends(get_db)):
     if not x_telegram_init_data: raise HTTPException(status_code=401)
@@ -225,6 +219,7 @@ def get_products(category: str = "All", search: str = "", skip: int = 0, limit: 
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
     categories = [c[0] for c in db.query(Product.category).distinct().all()] 
+    # Notice: digital_file_id is explicitly NOT passed to the frontend for complete security!
     res = [{"id": p.id, "name": p.name, "price": p.price, "desc": p.description, "category": p.category, "img": p.image_file_id, "stock": p.stock, "vendor_id": p.vendor_id, "vendor_name": p.vendor.full_name, "vendor_cod": p.vendor.accept_cod, "vendor_kpay": p.vendor.kpay_phone, "vendor_wave": p.vendor.wave_phone, "kpay_qr": p.vendor.kpay_qr, "wave_qr": p.vendor.wave_qr, "type": p.product_type} for p in products]
     return {"products": res, "categories": categories}
 
@@ -241,7 +236,6 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             if not product: db.rollback(); raise HTTPException(status_code=400, detail="အချို့ပစ္စည်းများမှာ စနစ်ထဲတွင် မရှိတော့ပါ။")
             qty = item.get('qty', 1)
             
-            # Physical Check Only
             if product.product_type == "physical" and product.stock < qty: 
                 db.rollback(); raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
                 
@@ -257,7 +251,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         try:
             items_str = "\n".join([f"- {n}" for n in ordered_names])
             pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ: `{tx_id}`"
-            bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းသူမှ အတည်ပြုပြီးပါက Digital ဖိုင်များ တိုက်ရိုက် ရောက်ရှိလာပါမည်။_", parse_mode="Markdown")
+            bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းသူမှ အတည်ပြုပြီးပါက Digital ဖိုင်များရှိလျှင် ဤ Chat သို့ တိုက်ရိုက် ရောက်ရှိလာပါမည်။_", parse_mode="Markdown")
             if vendor_notify: bot.send_message(vendor_notify, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}", parse_mode="Markdown")
         except: pass
         return {"status": "success"}
@@ -285,19 +279,17 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
     new_status = request.query_params.get("status")
     if new_status not in status_map: raise HTTPException(status_code=400)
     
-    # Restock physical item if cancelled
     if new_status == "cancelled" and order.status != "cancelled" and order.product.product_type == "physical": 
         order.product.stock += order.quantity 
         
-    # Auto-Send Digital Item upon Approval
+    # Send Digital Item securely upon Approval
     if new_status == "approved" and order.status != "approved":
         try:
-            if order.product.product_type == "ebook":
-                bot.send_document(order.user.telegram_id, order.product.digital_file_id, caption=f"📚 သင့်အော်ဒါ အတည်ပြုပြီးဖြစ်၍ E-book အား ပေးပို့လိုက်ပါသည်။\n\n📖 {order.product.name}")
-            elif order.product.product_type == "audio":
-                bot.send_audio(order.user.telegram_id, order.product.digital_file_id, caption=f"🎧 သင့်အော်ဒါ အတည်ပြုပြီးဖြစ်၍ Audio Book အား ပေးပို့လိုက်ပါသည်။\n\n🎵 {order.product.name}")
-        except Exception as e:
-            print("Delivery Error:", e)
+            if order.product.product_type == "ebook" and order.product.digital_file_id:
+                bot.send_document(order.user.telegram_id, order.product.digital_file_id, caption=f"📚 အော်ဒါအတည်ပြုပြီးဖြစ်၍ E-book အား ပေးပို့လိုက်ပါသည်။\n\n📖 {order.product.name}")
+            elif order.product.product_type == "audio" and order.product.digital_file_id:
+                bot.send_audio(order.user.telegram_id, order.product.digital_file_id, caption=f"🎧 အော်ဒါအတည်ပြုပြီးဖြစ်၍ Audio Book အား ပေးပို့လိုက်ပါသည်။\n\n🎵 {order.product.name}")
+        except Exception as e: print("Delivery Error:", e)
 
     order.status = new_status
     db.add(Notification(user_id=order.user_id, message=f"အော်ဒါ '{order.product.name}' ၏ အခြေအနေမှာ '{status_map[new_status][1]}' သို့ ပြောင်းလဲသွားပါသည်။")); db.commit()
@@ -343,43 +335,66 @@ async def chat_websocket(websocket: WebSocket, tg_data: str, db: Session = Depen
     except WebSocketDisconnect: chat_manager.disconnect(websocket)
 
 # ==========================================
-# ၅။ AI-POWERED CMS CHAT BOT (E-Book & Audio Added)
+# ၅။ AI-POWERED CMS CHAT BOT (Two-Step Upload)
 # ==========================================
+pending_digital_uploads = {} # In-memory store for 2-step upload
+
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
-    bot.send_message(message.chat.id, "မင်္ဂလာပါရှင်။\n\n🛍️ **ဈေးဝယ်ရန်** အောက်ပါခလုတ်ကို နှိပ်ပါ။\n📦 **ရောင်းချရန်** ရုပ်ဝတ္ထုပစ္စည်းအတွက် ဓာတ်ပုံ၊ E-book ဆိုပါက PDF/EPUB ဖိုင်၊ Audio Book ဆိုပါက MP3 ဖိုင်တို့ကို Caption နှင့်တကွ Chat သို့ တိုက်ရိုက်ပို့ပါ။", reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(message.chat.id, "မင်္ဂလာပါရှင်။\n\n🛍️ **ဈေးဝယ်ရန်** အောက်ပါခလုတ်ကို နှိပ်ပါ။\n📦 **ရောင်းချရန်** ရုပ်ဝတ္ထုအတွက် ဓာတ်ပုံကို တိုက်ရိုက်ပို့ပါ။ \nE-book/Audio ရောင်းမည်ဆိုပါက ဖိုင်ကိုအရင်ပို့ပြီးမှ Cover ပုံကို ဆက်ပို့ပေးပါ။", reply_markup=markup, parse_mode="Markdown")
 
-@bot.message_handler(content_types=['photo', 'document', 'audio'])
-def handle_cms_item(message):
+# 📌 STEP 1: Digital File ကို အရင်လက်ခံမည်
+@bot.message_handler(content_types=['document', 'audio'])
+def handle_digital_file(message):
     db = SessionLocal()
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
-    if not user: return db.close()
+    db.close()
+    
+    if not user or not (user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr):
+        return bot.reply_to(message, "⚠️ **ရောင်းချရန် ငွေပေးချေမှုစနစ် မသတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ KPay/Wave သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
 
-    if not (user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr):
-        bot.reply_to(message, "⚠️ **ရောင်းချရန် ငွေပေးချေမှုစနစ် မသတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ 'စီမံရန် -> Profile Setting' တွင် KPay/Wave သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
-        return db.close()
+    product_type = "ebook" if message.content_type == 'document' else "audio"
+    file_id = message.document.file_id if message.content_type == 'document' else message.audio.file_id
+    
+    pending_digital_uploads[str(message.from_user.id)] = {
+        "type": product_type,
+        "file_id": file_id,
+        "caption": message.caption or ""
+    }
+    
+    bot.reply_to(message, f"📥 **{product_type.upper()} File လက်ခံရရှိပါသည်!**\n\n📸 ကျေးဇူးပြု၍ ဤ E-book / Audio Book အတွက် အက်ပ်ထဲတွင်ပြသမည့် **မျက်နှာဖုံးပုံ (Cover Photo)** ကို ယခု ဆက်လက် ပေးပို့ပါ။\n\n_(စာအုပ်အမည်နှင့် ဈေးနှုန်းတို့ကို Cover Photo ပို့ရာတွင် Caption အဖြစ် ရေးသားပေးပါ)_", parse_mode="Markdown")
+
+# 📌 STEP 2: Cover Photo ကိုလက်ခံပြီး သိမ်းဆည်းမည် (Physical Product ဆိုလျှင်လည်း ဤနေရာမှ တိုက်ရိုက်အလုပ်လုပ်မည်)
+@bot.message_handler(content_types=['photo'])
+def handle_photo_cover(message):
+    user_tg_id = str(message.from_user.id)
+    db = SessionLocal()
+    user = db.query(User).filter(User.telegram_id == user_tg_id).first()
+    
+    if not user or not (user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr):
+        db.close()
+        return bot.reply_to(message, "⚠️ App ထဲသို့ဝင်၍ Profile Setting တွင် ငွေချေစနစ် သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
 
     if user.role == "buyer": user.role = "vendor"; db.commit()
 
+    product_type = "physical"
+    digital_file_id = ""
+    caption = message.caption or ""
+    image_file_id = message.photo[-1].file_id
+
+    # Check if this photo is a cover for a previously sent digital file
+    if user_tg_id in pending_digital_uploads:
+        pending_data = pending_digital_uploads.pop(user_tg_id)
+        product_type = pending_data["type"]
+        digital_file_id = pending_data["file_id"]
+        if not caption and pending_data["caption"]:
+            caption = pending_data["caption"] # Fallback to document caption if photo has none
+
+    if not caption: caption = "New Digital Product" if product_type != "physical" else "New Product"
+
     try:
-        caption = message.caption or "Digital Product"
-        product_type = "physical"
-        digital_file_id = ""
-        file_id = ""
-
-        if message.content_type == 'photo':
-            file_id = message.photo[-1].file_id 
-        elif message.content_type == 'document':
-            product_type = "ebook"
-            digital_file_id = message.document.file_id
-            if getattr(message.document, 'thumbnail', None):
-                file_id = message.document.thumbnail.file_id
-        elif message.content_type == 'audio':
-            product_type = "audio"
-            digital_file_id = message.audio.file_id
-
         ai_data = {"name": caption[:30] + "..." if len(caption) > 30 else caption, "price": 0, "category": "E-Book" if product_type=="ebook" else "Audio" if product_type=="audio" else "General", "description": caption, "stock": 99999 if product_type != "physical" else 10}
         
         if GROQ_API_KEY:
@@ -394,14 +409,14 @@ def handle_cms_item(message):
                 bot.delete_message(message.chat.id, msg.message_id)
             except: pass
 
-        new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id, product_type=product_type, digital_file_id=digital_file_id)
+        new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], stock=int(ai_data['stock']), image_file_id=image_file_id, vendor_id=user.id, product_type=product_type, digital_file_id=digital_file_id)
         db.add(new_product); db.commit()
-        bot.reply_to(message, f"✅ **ပစ္စည်း တင်ပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n📦 အမျိုးအစား: {product_type.upper()}", parse_mode="Markdown")
-    except Exception as e: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။ {e}")
+        bot.reply_to(message, f"✅ **ပစ္စည်း တင်ပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n📦 အမျိုးအစား: {product_type.upper()}\n\n_(ဝယ်သူငွေချေပြီးသည်နှင့် ဖိုင်ကို လျှို့ဝှက်စွာဖြင့် တိုက်ရိုက် ပို့ပေးသွားပါမည်။)_", parse_mode="Markdown")
+    except Exception as e: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (UI/UX Enhanced for Digital Goods)
+# ၆။ FRONTEND UI (100% Fixed Rendering Issues)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -576,6 +591,7 @@ async def serve_frontend():
         <script>
             const tg = window.Telegram.WebApp; const initData = tg.initData; 
             let allProducts = [], currentCategory = 'All', cart = []; let searchTimeout = null, mmData = {}; let currentUser = {}; let chatWs = null;
+            let currentVendorProducts = []; // To safely edit products without breaking JSON
 
             function showToast(msg) {
                 const t = document.getElementById("toast"); t.innerText = msg; t.className = "show animate-bounce-short";
@@ -638,7 +654,7 @@ async def serve_frontend():
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
             function closeNotiModal(e) { if(e.target === document.getElementById('noti-modal')) { document.getElementById('noti-modal').classList.remove('active'); fetchNotifications(); } }
 
-            function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Bot Chat သို့ ပစ္စည်းပုံ/စာအုပ်ဖိုင်များ ပို့ရန် App ကိုပိတ်မလား?", (r) => { if(r) tg.close(); }); }
+            function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Digital ပစ္စည်း (Ebook/Audio) ရောင်းလိုပါက ဖိုင်ကိုအရင်ပို့ပြီးမှ မျက်နှာဖုံးပုံကို နောက်မှပို့ပါ။ ရုပ်ဝတ္ထုဆိုပါက ပုံကိုတန်းပို့ပါ။ Bot ဆီသွားမလား?", (r) => { if(r) tg.close(); }); }
             function encodeImage(el, targetId) { let f = el.files[0]; if(!f) return; let r = new FileReader(); r.onloadend = function() { document.getElementById(targetId).value = r.result; document.getElementById(targetId + '-preview').src = r.result; document.getElementById(targetId + '-preview').classList.remove('hidden'); }; r.readAsDataURL(f); }
             async function saveVendorProfile() {
                 tg.MainButton.showProgress(); const payload = { accept_cod: document.getElementById('prof-cod').checked, kpay_phone: document.getElementById('prof-kpay-ph').value, wave_phone: document.getElementById('prof-wave-ph').value, kpay_qr: document.getElementById('prof-kpay-qr').value, wave_qr: document.getElementById('prof-wave-qr').value };
@@ -646,6 +662,7 @@ async def serve_frontend():
                 if(res.ok) { showToast("Profile သိမ်းဆည်းပြီးပါပြီ။"); currentUser.vendor_ready = true; document.getElementById('btn-orders').classList.remove('hidden'); }
             }
 
+            // 📌 Fixed Frontend Bug by using Array Indexes
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`); const data = await res.json(); allProducts = data.products;
                 if(query === "") {
@@ -669,12 +686,12 @@ async def serve_frontend():
                         <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0"><div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div><div class="absolute bottom-2.5 w-20 h-2 bg-slate-300/60 blur-[4px] rounded-full"></div><img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white"></div>
                         <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20">
                             <div class="mb-2">
-                                <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1 mb-1">🏪 ${p.vendor_name}</div>
-                                <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
+                                <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1 mb-1">🏪 ${escapeHTML(p.vendor_name)}</div>
+                                <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${escapeHTML(p.name)}</div>
                                 <div class="flex justify-between items-end mb-2"><div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>${typeBadgeHtml}</div>
-                                <div class="text-[10px] font-medium text-slate-500 line-clamp-2 leading-relaxed bg-slate-50 p-2 rounded-xl border border-slate-100/60">${p.desc ? p.desc : 'အကြောင်းအရာဖော်ပြချက် မရှိပါ။'}</div>
+                                <div class="text-[10px] font-medium text-slate-500 line-clamp-2 leading-relaxed bg-slate-50 p-2 rounded-xl border border-slate-100/60">${p.desc ? escapeHTML(p.desc) : 'အကြောင်းအရာဖော်ပြချက် မရှိပါ။'}</div>
                             </div>
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-1 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
+                            <button onclick="addToCartIndex(${index})" class="btn-press mt-1 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
                         </div>
                     </div>`
                 }).join('');
@@ -682,7 +699,8 @@ async def serve_frontend():
             function filterCategory(cat) { currentCategory = cat; loadProducts(); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
-            function addToCart(prod) { 
+            function addToCartIndex(idx) {
+                let prod = allProducts[idx];
                 let ex = cart.find(i => i.id === prod.id); 
                 if(ex) { if(prod.type !== 'physical' || ex.qty < prod.stock) ex.qty++; else return showToast("Stock မလုံလောက်ပါ။"); } else { cart.push({...prod, qty: 1}); }
                 updateCartBadge(); showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
@@ -702,7 +720,7 @@ async def serve_frontend():
                     let g = vGroups[vid];
                     let itemsHtml = g.items.map(i => `
                     <div class="flex justify-between items-center mb-3 bg-white p-3 rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.02)] border border-slate-100">
-                        <div class="flex-1 pr-3"><div class="text-[13px] font-bold text-slate-800 line-clamp-1">${i.name}</div><div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div></div>
+                        <div class="flex-1 pr-3"><div class="text-[13px] font-bold text-slate-800 line-clamp-1">${escapeHTML(i.name)}</div><div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div></div>
                         <div class="flex items-center gap-3 bg-slate-50 rounded-xl shadow-inner px-2 py-1 border border-slate-100"><button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button><span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span><button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button></div>
                     </div>`).join('');
                     
@@ -715,7 +733,7 @@ async def serve_frontend():
 
                     let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4"><label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန် ${hasDigital ? '<span class="text-[10px] text-red-500">(E-book/Audio အတွက် COD မရပါ)</span>' : ''}</label><select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">${options.join('')}</select><div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 animate-fade-in"><div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="" class="max-h-36 rounded-xl shadow-md border border-white hidden"></div><p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">-</p><input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300"></div></div>`;
                     
-                    html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5"><div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50"><h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3><span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span></div>${itemsHtml}${payHtml}<button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button></div>`;
+                    html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5"><div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50"><h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${escapeHTML(g.vendor_name)}</h3><span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span></div>${itemsHtml}${payHtml}<button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button></div>`;
                 }
                 html += `<div class="animate-fade-up bg-slate-50 border border-slate-200 p-5 rounded-3xl mb-5 mt-8 shadow-inner"><h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> လိပ်စာအချက်အလက်</h3><div class="space-y-3.5"><select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></select><select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- ခရိုင် --</option></select><select id="sel-township" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- မြို့နယ် --</option></select><input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><input type="tel" id="input-phone" placeholder="ဆက်သွယ်ရမည့် ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></div></div>`;
                 document.getElementById('cart-content-wrapper').innerHTML = html; 
@@ -752,7 +770,7 @@ async def serve_frontend():
                 document.getElementById('buyer-order-list').innerHTML = orders.map((o, index) => {
                     let level = trackIndex[o.status]; let progressWidth = level === 0 ? 0 : ((level - 1) / 3) * 100;
                     let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-4"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">အတည်ပြုသည်</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
-                    return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${(index % 10) * 0.1}s"><div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3"><span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span><span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span></div>${trackerHtml}<div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl"><span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span><span>📅 ${o.date}</span></div></div>`;
+                    return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${(index % 10) * 0.1}s"><div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3"><span class="text-[14px] font-extrabold text-slate-800 leading-snug">${escapeHTML(o.name)} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span><span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span></div>${trackerHtml}<div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl"><span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span><span>📅 ${o.date}</span></div></div>`;
                 }).join('');
             }
             
@@ -764,18 +782,18 @@ async def serve_frontend():
             async function loadVendorOrders() {
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
-                    return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${(index % 10) * 0.1}s"><div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div><div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed"><div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div><div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">'+o.tx+'</b>'}</div><div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div></div><select onchange="updateOrderStatus(${o.id}, this.value)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် / ဒစ်ဂျစ်တယ်ဖိုင်ပို့မည်</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`}).join('');
+                    return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${(index % 10) * 0.1}s"><div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${escapeHTML(o.name)} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div><div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed"><div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${escapeHTML(o.buyer)}</div><div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">'+o.tx+'</b>'}</div><div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${escapeHTML(o.addr)}</span></div></div><select onchange="updateOrderStatus(${o.id}, this.value)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် / ဒစ်ဂျစ်တယ်ဖိုင်ပို့မည်</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`}).join('');
             }
             async function updateOrderStatus(id, st) { await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); loadVendorOrders(); }
             
             async function loadVendorProducts() {
-                const res = await apiFetch('/api/vendor/products'); const vendorProducts = await res.json();
-                document.getElementById('vendor-product-list').innerHTML = vendorProducts.map((p, index) => {
+                const res = await apiFetch('/api/vendor/products'); currentVendorProducts = await res.json();
+                document.getElementById('vendor-product-list').innerHTML = currentVendorProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300?text=Digital';
-                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${(index % 10) * 0.1}s"><img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50"><div class="flex-1"><div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div><div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div><div class="text-[10px] text-slate-500 font-extrabold bg-slate-100 inline-flex px-2 py-0.5 rounded-md items-center gap-1 border border-slate-200">📦 Type: ${p.type.toUpperCase()}</div></div><div class="flex flex-col gap-2"><button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button><button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button></div></div>`
+                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${(index % 10) * 0.1}s"><img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50"><div class="flex-1"><div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${escapeHTML(p.name)}</div><div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div><div class="text-[10px] text-slate-500 font-extrabold bg-slate-100 inline-flex px-2 py-0.5 rounded-md items-center gap-1 border border-slate-200">📦 Type: ${p.type.toUpperCase()}</div></div><div class="flex flex-col gap-2"><button onclick="openEditModalIndex(${index})" class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button><button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button></div></div>`
                 }).join('');
             }
-            function openEditModal(prod) { document.getElementById('edit-prod-id').value = prod.id; document.getElementById('edit-prod-name').value = prod.name; document.getElementById('edit-prod-price').value = prod.price; document.getElementById('edit-prod-stock').value = prod.stock; document.getElementById('edit-product-modal').classList.add('active'); }
+            function openEditModalIndex(idx) { let prod = currentVendorProducts[idx]; document.getElementById('edit-prod-id').value = prod.id; document.getElementById('edit-prod-name').value = prod.name; document.getElementById('edit-prod-price').value = prod.price; document.getElementById('edit-prod-stock').value = prod.stock; document.getElementById('edit-product-modal').classList.add('active'); }
             function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
             async function saveEditProduct() {
                 const id = document.getElementById('edit-prod-id').value, name = document.getElementById('edit-prod-name').value.trim(), price = document.getElementById('edit-prod-price').value, stock = document.getElementById('edit-prod-stock').value;
