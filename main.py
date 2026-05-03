@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Cover Hidden Features)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Cart Fixed)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -219,7 +219,6 @@ def get_products(category: str = "All", search: str = "", skip: int = 0, limit: 
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
     categories = [c[0] for c in db.query(Product.category).distinct().all()] 
-    # Notice: digital_file_id is explicitly NOT passed to the frontend for complete security!
     res = [{"id": p.id, "name": p.name, "price": p.price, "desc": p.description, "category": p.category, "img": p.image_file_id, "stock": p.stock, "vendor_id": p.vendor_id, "vendor_name": p.vendor.full_name, "vendor_cod": p.vendor.accept_cod, "vendor_kpay": p.vendor.kpay_phone, "vendor_wave": p.vendor.wave_phone, "kpay_qr": p.vendor.kpay_qr, "wave_qr": p.vendor.wave_qr, "type": p.product_type} for p in products]
     return {"products": res, "categories": categories}
 
@@ -337,7 +336,7 @@ async def chat_websocket(websocket: WebSocket, tg_data: str, db: Session = Depen
 # ==========================================
 # ၅။ AI-POWERED CMS CHAT BOT (Two-Step Upload)
 # ==========================================
-pending_digital_uploads = {} # In-memory store for 2-step upload
+pending_digital_uploads = {} 
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -345,7 +344,6 @@ def start(message):
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
     bot.send_message(message.chat.id, "မင်္ဂလာပါရှင်။\n\n🛍️ **ဈေးဝယ်ရန်** အောက်ပါခလုတ်ကို နှိပ်ပါ။\n📦 **ရောင်းချရန်** ရုပ်ဝတ္ထုအတွက် ဓာတ်ပုံကို တိုက်ရိုက်ပို့ပါ။ \nE-book/Audio ရောင်းမည်ဆိုပါက ဖိုင်ကိုအရင်ပို့ပြီးမှ Cover ပုံကို ဆက်ပို့ပေးပါ။", reply_markup=markup, parse_mode="Markdown")
 
-# 📌 STEP 1: Digital File ကို အရင်လက်ခံမည်
 @bot.message_handler(content_types=['document', 'audio'])
 def handle_digital_file(message):
     db = SessionLocal()
@@ -366,7 +364,6 @@ def handle_digital_file(message):
     
     bot.reply_to(message, f"📥 **{product_type.upper()} File လက်ခံရရှိပါသည်!**\n\n📸 ကျေးဇူးပြု၍ ဤ E-book / Audio Book အတွက် အက်ပ်ထဲတွင်ပြသမည့် **မျက်နှာဖုံးပုံ (Cover Photo)** ကို ယခု ဆက်လက် ပေးပို့ပါ။\n\n_(စာအုပ်အမည်နှင့် ဈေးနှုန်းတို့ကို Cover Photo ပို့ရာတွင် Caption အဖြစ် ရေးသားပေးပါ)_", parse_mode="Markdown")
 
-# 📌 STEP 2: Cover Photo ကိုလက်ခံပြီး သိမ်းဆည်းမည် (Physical Product ဆိုလျှင်လည်း ဤနေရာမှ တိုက်ရိုက်အလုပ်လုပ်မည်)
 @bot.message_handler(content_types=['photo'])
 def handle_photo_cover(message):
     user_tg_id = str(message.from_user.id)
@@ -384,13 +381,12 @@ def handle_photo_cover(message):
     caption = message.caption or ""
     image_file_id = message.photo[-1].file_id
 
-    # Check if this photo is a cover for a previously sent digital file
     if user_tg_id in pending_digital_uploads:
         pending_data = pending_digital_uploads.pop(user_tg_id)
         product_type = pending_data["type"]
         digital_file_id = pending_data["file_id"]
         if not caption and pending_data["caption"]:
-            caption = pending_data["caption"] # Fallback to document caption if photo has none
+            caption = pending_data["caption"] 
 
     if not caption: caption = "New Digital Product" if product_type != "physical" else "New Product"
 
@@ -416,7 +412,7 @@ def handle_photo_cover(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (100% Fixed Rendering Issues)
+# ၆။ FRONTEND UI (CART BUG FULLY FIXED)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -484,7 +480,7 @@ async def serve_frontend():
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
                     <span id="noti-count" class="badge hidden">0</span>
                 </button>
-                <button onclick="showTab('cart-tab', 'btn-cart')" class="btn-press relative p-2.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition">
+                <button id="btn-cart" onclick="showTab('cart-tab', 'btn-cart')" class="btn-press relative p-2.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                     <span id="cart-count" class="badge hidden">0</span>
                 </button>
@@ -591,7 +587,7 @@ async def serve_frontend():
         <script>
             const tg = window.Telegram.WebApp; const initData = tg.initData; 
             let allProducts = [], currentCategory = 'All', cart = []; let searchTimeout = null, mmData = {}; let currentUser = {}; let chatWs = null;
-            let currentVendorProducts = []; // To safely edit products without breaking JSON
+            let currentVendorProducts = [];
 
             function showToast(msg) {
                 const t = document.getElementById("toast"); t.innerText = msg; t.className = "show animate-bounce-short";
@@ -613,15 +609,37 @@ async def serve_frontend():
             async function fetchLocationData() { try { const res = await fetch('/api/locations'); mmData = await res.json(); } catch(e) {} }
             function getSelectOptions(dataObj, defaultText) { let html = `<option value="">-- ${defaultText} --</option>`; if(dataObj) { if(Array.isArray(dataObj)) dataObj.forEach(v => html += `<option value="${v}">${v}</option>`); else for(let k in dataObj) html += `<option value="${k}">${k}</option>`; } return html; }
             
+            // 📌 FULLY ROBUST NULL-SAFE showTab FUNCTION
             function showTab(tabId, btnId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); });
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                const tab = document.getElementById(tabId); tab.classList.remove('hidden'); void tab.offsetWidth; tab.classList.add('animate-fade-in');
-                if(btnId) { document.getElementById(btnId).classList.add('active'); document.getElementById('btn-cart').classList.remove('active'); }
-                if(tabId === 'cart-tab') { document.getElementById('btn-cart').classList.add('active'); renderGroupedCart(); }
-                if(tabId === 'history-tab') loadBuyerOrders(); if(tabId === 'orders-tab') switchVendorTab('dash');
-                if(tabId !== 'chat-tab') window.scrollTo({ top: 0, behavior: 'smooth' }); else scrollToChatBottom();
+                
+                const tab = document.getElementById(tabId);
+                if (tab) {
+                    tab.classList.remove('hidden');
+                    void tab.offsetWidth;
+                    tab.classList.add('animate-fade-in');
+                }
+                
+                let cartBtn = document.getElementById('btn-cart');
+                
+                if(btnId) { 
+                    let btn = document.getElementById(btnId);
+                    if (btn) btn.classList.add('active'); 
+                    if (cartBtn && btnId !== 'btn-cart') cartBtn.classList.remove('active'); 
+                }
+                
+                if(tabId === 'cart-tab') { 
+                    if (cartBtn) cartBtn.classList.add('active'); 
+                    renderGroupedCart(); 
+                }
+                
+                if(tabId === 'history-tab') loadBuyerOrders(); 
+                if(tabId === 'orders-tab') switchVendorTab('dash');
+                
+                if(tabId !== 'chat-tab') window.scrollTo({ top: 0, behavior: 'smooth' }); 
+                else scrollToChatBottom();
             }
 
             async function initChat() {
@@ -662,7 +680,6 @@ async def serve_frontend():
                 if(res.ok) { showToast("Profile သိမ်းဆည်းပြီးပါပြီ။"); currentUser.vendor_ready = true; document.getElementById('btn-orders').classList.remove('hidden'); }
             }
 
-            // 📌 Fixed Frontend Bug by using Array Indexes
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`); const data = await res.json(); allProducts = data.products;
                 if(query === "") {
