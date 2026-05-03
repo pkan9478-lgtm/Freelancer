@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Final Version)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Full Locations)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -46,7 +46,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/mall_ai_pro
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base() # ✅ Fixed SQLAlchemy 2.0 Warning
+Base = declarative_base() 
 
 class User(Base):
     __tablename__ = "users"
@@ -139,7 +139,7 @@ def get_telegram_image(file_id: str):
     except: raise HTTPException(status_code=404)
 
 # ==========================================
-# ၄။ API ENDPOINTS (Includes Notifications & Settings)
+# ၄။ API ENDPOINTS
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
@@ -154,18 +154,97 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }
     }
 
+# ✅ ပြည့်စုံသော မြန်မာနိုင်ငံ လိပ်စာဒေတာ (State -> District -> Township)
 @app.get("/api/locations")
 def get_locations():
-    file_path = os.path.join(DATA_DIR, "locations.json")
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
-    else:
-        sample_data = {
-            "ရန်ကုန်တိုင်းဒေသကြီး": { "ရန်ကုန်အနောက်ပိုင်းခရိုင်": { "ကမာရွတ်မြို့နယ်": { "ကမာရွတ်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်"] } } },
-            "မန္တလေးတိုင်းဒေသကြီး": { "မန္တလေးခရိုင်": { "ချမ်းအေးသာစံမြို့နယ်": { "ချမ်းအေးသာစံ(မြို့ပေါ်)": ["မြို့မ", "ပတ်ကုန်း"] } } }
+    return {
+        "ရန်ကုန်တိုင်းဒေသကြီး": {
+            "ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"],
+            "ရန်ကုန်အရှေ့ပိုင်းခရိုင်": ["သင်္ဃန်းကျွန်း", "ရန်ကင်း", "တောင်ဥက္ကလာပ", "မြောက်ဥက္ကလာပ", "သာကေတ", "ဒေါပုံ", "တာမွေ", "ပုဇွန်တောင်", "ဗိုလ်တထောင်", "ဒဂုံမြို့သစ်(တောင်ပိုင်း)", "ဒဂုံမြို့သစ်(မြောက်ပိုင်း)", "ဒဂုံမြို့သစ်(အရှေ့ပိုင်း)", "ဒဂုံမြို့သစ်(ဆိပ်ကမ်း)"],
+            "ရန်ကုန်မြောက်ပိုင်းခရိုင်": ["အင်းစိန်", "မင်္ဂလာဒုံ", "မှော်ဘီ", "လှည်းကူး", "တိုက်ကြီး", "ထန်းတပင်", "ရွှေပြည်သာ", "လှိုင်သာယာ"],
+            "ရန်ကုန်တောင်ပိုင်းခရိုင်": ["သန်လျင်", "ကျောက်တန်း", "ခရမ်း", "သုံးခွ", "တွံတေး", "ကော့မှူး", "ကွမ်းခြံကုန်း", "ဒလ", "ဆိပ်ကြီးခနောင်တို"]
+        },
+        "မန္တလေးတိုင်းဒေသကြီး": {
+            "မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"],
+            "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"],
+            "ကျောက်ဆည်ခရိုင်": ["ကျောက်ဆည်", "စဉ့်ကိုင်", "မြစ်သား", "တံတားဦး"],
+            "မိတ္ထီလာခရိုင်": ["မိတ္ထီလာ", "မလှိုင်", "သာစည်", "ဝမ်းတွင်း"],
+            "မြင်းခြံခရိုင်": ["မြင်းခြံ", "တောင်သာ", "နွားထိုးကြီး", "ကျောက်ပန်းတောင်း", "ငါန်းဇွန်"],
+            "ညောင်ဦးခရိုင်": ["ညောင်ဦး", "ကျောက်ပန်းတောင်း"],
+            "ရမည်းသင်းခရိုင်": ["ရမည်းသင်း", "ပျော်ဘွယ်"]
+        },
+        "နေပြည်တော်": {
+            "ဥတ္တရခရိုင်": ["ဥတ္တရသီရိ", "ပုဗ္ဗသီရိ", "ဇေယျာသီရိ", "တပ်ကုန်း"],
+            "ဒက္ခိဏခရိုင်": ["ဒက္ခိဏသီရိ", "ဇမ္ဗူသီရိ", "ပျဉ်းမနား", "လယ်ဝေး"]
+        },
+        "ပဲခူးတိုင်းဒေသကြီး": {
+            "ပဲခူးခရိုင်": ["ပဲခူး", "ဒိုက်ဦး", "ကဝ", "သနပ်ပင်", "ဝေါ", "ညောင်လေးပင်", "ကျောက်တံခါး", "ရွှေကျင်"],
+            "တောင်ငူခရိုင်": ["တောင်ငူ", "ရေတာရှည်", "ကျောက်ကြီး", "ဖြူး", "အုတ်တွင်း", "ထန်းတပင်"],
+            "ပြည်ခရိုင်": ["ပြည်", "ပေါက်ခေါင်း", "ပန်းတောင်း", "ပေါင်းတည်", "သဲကုန်း", "ရွှေတောင်"],
+            "သာယာဝတီခရိုင်": ["သာယာဝတီ", "လက်ပံတန်း", "မင်းလှ", "မိုးညို", "အုတ်ဖို", "ကြို့ပင်ကောက်", "ဇီးကုန်း", "နတ်တလင်း"]
+        },
+        "ဧရာဝတီတိုင်းဒေသကြီး": {
+            "ပုသိမ်ခရိုင်": ["ပုသိမ်", "ကန်ကြီးထောင့်", "သာပေါင်း", "ငပုတော", "ကျုံပျော်", "ရေကြည်", "ကျောင်းကုန်း"],
+            "ဟင်္သာတခရိုင်": ["ဟင်္သာတ", "ဇလွန်", "လေးမျက်နှာ", "မြန်အောင်", "ကြံခင်း", "အင်္ဂပူ"],
+            "မြောင်းမြခရိုင်": ["မြောင်းမြ", "အိမ်မဲ", "ဝါးခယ်မ"],
+            "မအူပင်ခရိုင်": ["မအူပင်", "ပန်းတနော်", "ညောင်တုန်း", "ဓနုဖြူ"],
+            "ဖျာပုံခရိုင်": ["ဖျာပုံ", "ဘိုကလေး", "ကျိုက်လတ်", "ဒေးဒရဲ"],
+            "လပွတ္တာခရိုင်": ["လပွတ္တာ", "မော်လမြိုင်ကျွန်း"]
+        },
+        "မွန်ပြည်နယ်": {
+            "မော်လမြိုင်ခရိုင်": ["မော်လမြိုင်", "ကျိုက်မရော", "ချောင်းဆုံ", "သံဖြူဇရပ်", "မုဒုံ", "ရေး"],
+            "သထုံခရိုင်": ["သထုံ", "ပေါင်", "ကျိုက်ထို", "ဘီးလင်း"]
+        },
+        "ရှမ်းပြည်နယ်": {
+            "တောင်ကြီးခရိုင်": ["တောင်ကြီး", "ညောင်ရွှေ", "ဟိုပုံး", "ဆီဆိုင်", "ကလော", "ပင်းတယ", "ရွာငံ", "ရပ်စောက်"],
+            "လားရှိုးခရိုင်": ["လားရှိုး", "သိန္နီ", "မိုင်းရယ်", "တန့်ယန်း"],
+            "ကျိုင်းတုံခရိုင်": ["ကျိုင်းတုံ", "မိုင်းခတ်", "မိုင်းပြင်း", "မိုင်းယန်း"],
+            "တာချီလိတ်ခရိုင်": ["တာချီလိတ်", "မိုင်းဖြတ်", "မိုင်းယောင်း"],
+            "မူဆယ်ခရိုင်": ["မူဆယ်", "နမ့်ခမ်း", "ကွတ်ခိုင်"]
+        },
+        "စစ်ကိုင်းတိုင်းဒေသကြီး": {
+            "စစ်ကိုင်းခရိုင်": ["စစ်ကိုင်း", "မြင်းမူ", "မြောင်"],
+            "မုံရွာခရိုင်": ["မုံရွာ", "အရာတော်", "ချောင်းဦး", "ဘုတလင်"],
+            "ရွှေဘိုခရိုင်": ["ရွှေဘို", "ခင်ဦး", "ဝက်လက်", "ကန့်ဘလူ", "ကျွန်းလှ", "ရေဦး", "ဒီပဲယင်း", "တန့်ဆည်"],
+            "ကလေးခရိုင်": ["ကလေး", "ကလေးဝ", "မင်းကင်း"]
+        },
+        "မကွေးတိုင်းဒေသကြီး": {
+            "မကွေးခရိုင်": ["မကွေး", "ရေနံချောင်း", "ချောက်", "တောင်တွင်းကြီး", "မြို့သစ်", "နတ်မောက်"],
+            "မင်းဘူးခရိုင်": ["မင်းဘူး", "ပွင့်ဖြူ", "ငဖဲ", "စေတုတ္တရာ"],
+            "ပခုက္ကူခရိုင်": ["ပခုက္ကူ", "ရေစကြို", "မြိုင်", "ပေါက်", "ဆိပ်ဖြူ"],
+            "သရက်ခရိုင်": ["သရက်", "မင်းတုန်း", "မင်းလှ", "အောင်လံ", "ကံမ", "ဆင်ပေါင်ဝဲ"]
+        },
+        "ကရင်ပြည်နယ်": {
+            "ဘားအံခရိုင်": ["ဘားအံ", "လှိုင်းဘွဲ", "ဖာပွန်", "သံတောင်ကြီး"],
+            "မြဝတီခရိုင်": ["မြဝတီ"],
+            "ကော့ကရိတ်ခရိုင်": ["ကော့ကရိတ်", "ကြာအင်းဆိပ်ကြီး"]
+        },
+        "ကယားပြည်နယ်": {
+            "လွိုင်ကော်ခရိုင်": ["လွိုင်ကော်", "ဒီမော့ဆို", "ဖရူဆို", "ရှားတော"],
+            "ဘောလခဲခရိုင်": ["ဘောလခဲ", "ဖားဆောင်း", "မယ်စဲ့"]
+        },
+        "ကချင်ပြည်နယ်": {
+            "မြစ်ကြီးနားခရိုင်": ["မြစ်ကြီးနား", "ဝိုင်းမော်", "အင်ဂျန်းယန်", "တနိုင်း", "ချီဖွေ", "ဆော့လော်"],
+            "ဗန်းမော်ခရိုင်": ["ဗန်းမော်", "ရွှေကူ", "မိုးမောက်", "မန်စီ"],
+            "မိုးညှင်းခရိုင်": ["မိုးညှင်း", "မိုးကောင်း", "ဖားကန့်"]
+        },
+        "ချင်းပြည်နယ်": {
+            "ဟားခါးခရိုင်": ["ဟားခါး", "ထန်တလန်"],
+            "ဖလမ်းခရိုင်": ["ဖလမ်း", "တီတိန်", "တွန်းဇံ"],
+            "မင်းတပ်ခရိုင်": ["မင်းတပ်", "မတူပီ", "ကန်ပက်လက်", "ပလက်ဝ"]
+        },
+        "ရခိုင်ပြည်နယ်": {
+            "စစ်တွေခရိုင်": ["စစ်တွေ", "ပုဏ္ဏားကျွန်း", "မြောက်ဦး", "ကျောက်တော်", "မင်းပြား", "မြေပုံ", "ပေါက်တော", "ရသေ့တောင်"],
+            "မောင်တောခရိုင်": ["မောင်တော", "ဘူးသီးတောင်"],
+            "ကျောက်ဖြူခရိုင်": ["ကျောက်ဖြူ", "မာန်အောင်", "ရမ်းဗြဲ", "အမ်း"],
+            "သံတွဲခရိုင်": ["သံတွဲ", "တောင်ကုတ်", "ဂွ"]
+        },
+        "တနင်္သာရီတိုင်းဒေသကြီး": {
+            "ထားဝယ်ခရိုင်": ["ထားဝယ်", "လောင်းလုံး", "သရက်ချောင်း", "ရေဖြူ"],
+            "မြိတ်ခရိုင်": ["မြိတ်", "ကျွန်းစု", "ပုလော", "တနင်္သာရီ"],
+            "ကော့သောင်းခရိုင်": ["ကော့သောင်း", "ဘုတ်ပြင်း"]
         }
-        with open(file_path, "w", encoding="utf-8") as f: json.dump(sample_data, f, ensure_ascii=False, indent=4)
-        return sample_data
+    }
 
 @app.get("/api/notifications")
 def get_notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -210,44 +289,64 @@ def get_products(category: str = "All", search: str = "", skip: int = 0, limit: 
 
 @app.post("/api/checkout")
 async def checkout_cart(req: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    data = await req.json()
-    cart_items = data.get('cart', []) 
-    tx_id = data.get('transaction_id', '')
-    payment_method = data.get('payment_method', 'QR') 
-    address = data.get('address', 'Unknown')
-    phone = data.get('phone', '')
+    try:
+        data = await req.json()
+        cart_items = data.get('cart', []) 
+        tx_id = data.get('transaction_id', '')
+        payment_method = data.get('payment_method', 'QR') 
+        address = data.get('address', 'Unknown')
+        phone = data.get('phone', '')
 
-    if not cart_items: raise HTTPException(status_code=400, detail="Cart is empty")
-    total_amount, ordered_names = 0, []
-    vendor_notify = None
-
-    for item in cart_items:
-        p_id = item.get('id')
-        qty = item.get('qty', 1)
-        product = db.query(Product).filter(Product.id == p_id).with_for_update().first()
+        if not cart_items: 
+            raise HTTPException(status_code=400, detail="ခြင်းတောင်းထဲတွင် ပစ္စည်းမရှိပါ။")
         
-        if product and product.stock >= qty:
+        total_amount = 0
+        ordered_names = []
+        vendor_notify = None
+
+        for item in cart_items:
+            p_id = item.get('id')
+            qty = item.get('qty', 1)
+            
+            product = db.query(Product).filter(Product.id == p_id).first()
+            
+            if not product:
+                db.rollback()
+                raise HTTPException(status_code=400, detail="အချို့ပစ္စည်းများမှာ စနစ်ထဲတွင် မရှိတော့ပါ။")
+
+            if product.stock < qty:
+                db.rollback()
+                raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
+                
             db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method))
+            
             product.stock -= qty 
             total_amount += (product.price * qty)
             ordered_names.append(f"{product.name} (x{qty})")
-            if product.vendor: vendor_notify = product.vendor.telegram_id
-        else:
-            db.rollback()
-            raise HTTPException(status_code=400, detail=f"'{product.name if product else 'Item'}' ပစ္စည်းလက်ကျန်မလုံလောက်ပါ။")
             
-    if address and user.default_address != address: user.default_address = address
-    if phone and user.phone != phone: user.phone = phone
-    db.commit()
+            if product.vendor: 
+                vendor_notify = product.vendor.telegram_id
+                
+        if address and user.default_address != address: user.default_address = address
+        if phone and user.phone != phone: user.phone = phone
+        db.commit()
 
-    try:
-        items_str = "\n".join([f"- {n}" for n in ordered_names])
-        pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ: `{tx_id}`"
-        bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းချသူမှ အတည်ပြုပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
-        if vendor_notify:
-            bot.send_message(vendor_notify, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် အော်ဒါကို စစ်ဆေး၍ အတည်ပြုပေးပါ။", parse_mode="Markdown")
-    except: pass
-    return {"status": "success"}
+        try:
+            items_str = "\n".join([f"- {n}" for n in ordered_names])
+            pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ: `{tx_id}`"
+            bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းချသူမှ အတည်ပြုပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
+            if vendor_notify:
+                bot.send_message(vendor_notify, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် အော်ဒါကို စစ်ဆေး၍ အတည်ပြုပေးပါ။", parse_mode="Markdown")
+        except Exception as e: 
+            print("Telegram Send Error:", e)
+
+        return {"status": "success"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="စနစ်ချို့ယွင်းမှုဖြစ်ပေါ်နေပါသည်။ ခေတ္တစောင့်ပါ။")
 
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -276,13 +375,11 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
     if new_status == "cancelled" and order.status != "cancelled": order.product.stock += order.quantity 
     order.status = new_status
     
-    # Send App Notification
     short_status = status_map[new_status][1]
     noti_msg = f"သင့်အော်ဒါ '{order.product.name}' ၏ အခြေအနေမှာ '{short_status}' သို့ ပြောင်းလဲသွားပါသည်။"
     db.add(Notification(user_id=order.user_id, message=noti_msg))
     db.commit()
 
-    # Send Telegram Notification
     try: bot.send_message(order.user.telegram_id, f"{status_map[new_status][0]}\nပစ္စည်း: **{order.product.name} (x{order.quantity})**", parse_mode="Markdown")
     except: pass
     return {"status": "success"}
@@ -356,7 +453,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (P2P + Tracker + Setup Logic)
+# ၆။ FRONTEND UI 
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -375,7 +472,6 @@ async def serve_frontend():
             .cat-chip.active { background-color: #2563eb; color: white; border-color: #2563eb; }
             .badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold; }
             
-            /* Modal Settings */
             .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
@@ -385,7 +481,7 @@ async def serve_frontend():
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             
             #toast { visibility: hidden; min-width: 250px; background-color: rgba(31, 41, 55, 0.95); color: #fff; text-align: center; border-radius: 12px; padding: 14px; position: fixed; z-index: 100; left: 50%; bottom: 80px; transform: translateX(-50%); font-size: 14px; backdrop-filter: blur(4px); }
-            #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 2.5s; }
+            #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 3.5s; }
             
             /* Tracker Visuals */
             .tracker-container { display: flex; justify-content: space-between; align-items: center; position: relative; margin: 15px 10px 5px 10px; }
@@ -516,7 +612,7 @@ async def serve_frontend():
                 const t = document.getElementById("toast");
                 t.innerText = msg; t.className = "show";
                 if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
-                setTimeout(() => { t.className = t.className.replace("show", ""); }, 2800);
+                setTimeout(() => { t.className = t.className.replace("show", ""); }, 3200);
             }
 
             async function apiFetch(url, options = {}) {
@@ -538,7 +634,7 @@ async def serve_frontend():
 
                     if (currentUser.role === 'vendor' || currentUser.role === 'admin') { document.getElementById('btn-orders').classList.remove('hidden'); }
                     loadProducts();
-                } catch (e) { showToast("Auth Failed"); }
+                } catch (e) { showToast("Authentication Failed"); }
             }
 
             // NOTIFICATIONS
@@ -641,6 +737,7 @@ async def serve_frontend():
                     else if(m === "Wave") { img.src = gData.wave_qr || ""; img.classList.toggle("hidden", !gData.wave_qr); ph.innerText = gData.wave_phone || "-"; }
                 }
             }
+
             async function checkoutVendor(vid) {
                 const st = document.getElementById('sel-state').value, dist = document.getElementById('sel-district').value, tsp = document.getElementById('sel-township').value, str = document.getElementById('input-street').value.trim(), ph = document.getElementById('input-phone').value.trim();
                 if(!st || !dist || !tsp || !str || !ph) return showToast("လိပ်စာနှင့် ဖုန်းနံပါတ် ပြည့်စုံစွာ ဖြည့်ပါ။");
@@ -649,8 +746,16 @@ async def serve_frontend():
                 tg.MainButton.showProgress();
                 try {
                     const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify({ transaction_id: txId, address: `${str}၊ ${tsp}၊ ${dist}၊ ${st}။`, phone: ph, payment_method: m, cart: cart.filter(i => i.vendor_id == vid).map(i=>({id:i.id, qty:i.qty})) }) });
-                    if(res.ok) { cart = cart.filter(i => i.vendor_id != vid); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); if(cart.length === 0) showTab('history-tab', 'btn-history'); else renderGroupedCart(); } else showToast("Error Occurred");
-                } catch(e) {} finally { tg.MainButton.hideProgress(); }
+                    if(res.ok) { 
+                        cart = cart.filter(i => i.vendor_id != vid); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
+                        if(cart.length === 0) showTab('history-tab', 'btn-history'); else renderGroupedCart(); 
+                    } else { 
+                        let errMsg = "အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။";
+                        try { const errData = await res.json(); if(errData.detail) errMsg = errData.detail; } catch(err) {}
+                        showToast("⚠️ " + errMsg);
+                    }
+                } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); } 
+                finally { tg.MainButton.hideProgress(); }
             }
 
             // ORDER TRACKER
