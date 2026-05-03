@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (UI Enhanced)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Table-Top UI Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -464,7 +464,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (UI/UX Enhanced)
+# ၆။ FRONTEND UI (UI/UX Enhanced with Table-Top Style)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -476,13 +476,13 @@ async def serve_frontend():
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+Myanmar:wght@400;600;800&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Noto+Sans+Myanmar:wght@400;500;600;800&display=swap" rel="stylesheet">
         <title>Digital Mall Master</title>
         <style>
             body { 
                 font-family: 'Inter', 'Noto Sans Myanmar', sans-serif; 
                 -webkit-tap-highlight-color: transparent; 
-                background-color: #f8fafc; /* Softer, lighter slate background */
+                background-color: #f8fafc; 
             }
             
             /* Animations & Gradients */
@@ -610,7 +610,7 @@ async def serve_frontend():
                 </div>
                 <div id="category-container" class="flex gap-2.5 overflow-x-auto pb-2 scrollbar-hide pt-1"></div>
             </div>
-            <div id="product-list" class="p-4 grid grid-cols-2 gap-4"></div>
+            <div id="product-list" class="p-4 grid grid-cols-2 gap-4 pb-12"></div>
         </div>
 
         <div id="cart-tab" class="tab-content hidden p-4 animate-fade-in">
@@ -761,7 +761,7 @@ async def serve_frontend():
                 if(res.ok) { showToast("Profile သိမ်းဆည်းပြီးပါပြီ။"); currentUser.vendor_ready = true; document.getElementById('btn-orders').classList.remove('hidden'); }
             }
 
-            // SHOPPING
+            // SHOPPING (Table-top Style UI)
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`); const data = await res.json(); allProducts = data.products;
                 if(query === "") {
@@ -774,16 +774,34 @@ async def serve_frontend():
                 document.getElementById('product-list').innerHTML = allProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; const isOut = p.stock <= 0;
                     const animDelay = (index % 10) * 0.05; // stagger animation
-                    return `<div class="animate-fade-up bg-white rounded-3xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-lg ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
-                        ${isOut ? '<div class="absolute top-3 right-3 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2.5 py-1 rounded-lg z-10 shadow-sm">ကုန်နေပါသည်</div>' : ''}
-                        <img src="${imgSrc}" class="w-full h-36 object-cover bg-slate-100">
-                        <div class="p-3.5 flex-grow flex flex-col justify-between">
-                            <div>
-                                <div class="text-[10px] font-bold text-slate-400 mb-1 flex items-center gap-1">🏪 ${p.vendor_name}</div>
-                                <div class="text-[13px] font-bold text-slate-800 line-clamp-2 leading-snug">${p.name}</div>
-                                <div class="text-indigo-600 text-[16px] font-black mt-1.5">${p.price.toLocaleString()} <span class="text-[10px]">Ks</span></div>
+                    
+                    // Table-Top Card Design
+                    return `<div class="animate-fade-up bg-white rounded-[24px] shadow-[0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-xl ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
+                        ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-sm">ကုန်နေပါသည်</div>' : ''}
+                        
+                        <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
+                            <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
+                            <div class="absolute bottom-2.5 w-20 h-2 bg-slate-300/60 blur-[4px] rounded-full"></div>
+                            
+                            <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
+                        </div>
+                        
+                        <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20">
+                            <div class="mb-2">
+                                <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1 mb-1">🏪 ${p.vendor_name}</div>
+                                <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
+                                
+                                <div class="flex justify-between items-end mb-2">
+                                    <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
+                                    <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
+                                </div>
+                                
+                                <div class="text-[10px] font-medium text-slate-500 line-clamp-2 leading-relaxed bg-slate-50 p-2 rounded-xl border border-slate-100/60">
+                                    ${p.desc ? p.desc : 'အကြောင်းအရာဖော်ပြချက် မရှိပါ။'}
+                                </div>
                             </div>
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-3.5 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>
+                            
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-1 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>
                                 🛒 ခြင်းထဲထည့်မည်
                             </button>
                         </div>
