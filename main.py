@@ -27,10 +27,11 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
-# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ
+# Platform Payment Info (QR Codes & Numbers)
 PAYMENT_INFO = {
     "kpay": "09123456789 (Digital Mall)",
     "wave": "09123456789 (Digital Mall)",
+    # Placeholder QR URL (ပြောင်းလဲအသုံးပြုနိုင်သည်)
     "qr_url": "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=09123456789" 
 }
 
@@ -42,7 +43,9 @@ try:
     if REDIS_URL:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
+        print("✅ Redis Connected")
 except: 
+    print("⚠️ Redis Not Connected")
     redis_client = None
 
 # ==========================================
@@ -83,7 +86,7 @@ class Order(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer, default=1) 
-    payment_method = Column(String, default="COD") 
+    payment_method = Column(String, default="COD") # COD သို့မဟုတ် QR
     transaction_id = Column(String, default="") 
     address = Column(String) 
     status = Column(String, default="pending") 
@@ -131,7 +134,7 @@ def get_telegram_image(file_id: str):
     except: raise HTTPException(status_code=404)
 
 # ==========================================
-# ၄။ API ENDPOINTS
+# ၄။ API ENDPOINTS 
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
@@ -142,12 +145,13 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }, "payment_info": PAYMENT_INFO
     }
 
-# အလိုအလျောက် လိပ်စာ သိမ်းဆည်းရန်နှင့် Vendor အဖြစ်မြှင့်တင်ရန်
+# အလိုအလျောက် လိပ်စာ သိမ်းဆည်းရန် API
 @app.post("/api/user/address")
 async def update_user_address(req: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = await req.json()
     if "address" in data: user.default_address = data["address"]
     if "phone" in data: user.phone = data["phone"]
+    # Promote to vendor automatically if saving setup profile
     if user.role == "buyer": user.role = "vendor"
     db.commit()
     return {"status": "success"}
@@ -199,6 +203,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
     if phone and user.phone != phone: user.phone = phone
     db.commit()
 
+    # Process Receipt Image if QR payment
     img_data = None
     if receipt_b64 and "," in receipt_b64:
         try:
@@ -230,12 +235,14 @@ def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depen
 @app.post("/api/buyer/orders/{order_id}/cancel")
 def cancel_buyer_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     order = db.query(Order).filter(Order.id == order_id, Order.user_id == user.id).first()
-    if not order or order.status != "pending": raise HTTPException(status_code=400)
+    if not order: raise HTTPException(status_code=404)
+    if order.status != "pending": raise HTTPException(status_code=400)
     order.status = "cancelled"
     order.product.stock += order.quantity 
     db.commit()
     return {"status": "success"}
 
+# MULTI-VENDOR ENDPOINTS
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
@@ -244,7 +251,7 @@ def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depe
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    status_map = {"approved": "✅ အတည်ပြုပါသည်။ ထုပ်ပိုးနေပါသည်။", "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"}
+    status_map = {"approved": "✅ ငွေလွှဲမှန်ကန်ပါသည်။ ထုပ်ပိုးနေပါသည်။", "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"}
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order or (order.product.vendor_id != user.id and user.role != "admin"): raise HTTPException(status_code=400)
     
@@ -270,6 +277,16 @@ async def update_product_stock(product_id: int, request: Request, user: User = D
     if product: product.stock = data.get("stock", product.stock); db.commit()
     return {"status": "success"}
 
+@app.put("/api/vendor/products/{product_id}/edit")
+async def edit_product_info(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    data = await request.json()
+    product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
+    if product:
+        if "name" in data: product.name = data["name"]
+        if "price" in data: product.price = float(data["price"])
+        db.commit()
+    return {"status": "success"}
+
 @app.delete("/api/vendor/products/{product_id}")
 def delete_product(product_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
@@ -283,7 +300,7 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
 def start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
-    msg = """မင်္ဂလာပါရှင်။ \n🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။\n📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** Web App ထဲရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း ဖွင့်လှစ်ပါ။ ပြီးပါက ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' ကိုပေးပို့ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
+    msg = """မင်္ဂလာပါရှင်။ \n🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။\n📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** Web App ထဲရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း ဖွင့်လှစ်ပါ။ ပြီးပါက ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' (Caption တပ်၍) ဤနေရာသို့ ပေးပို့ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
     bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['photo'])
@@ -291,7 +308,7 @@ def handle_cms_photo(message):
     db = SessionLocal()
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
     if not user or user.role not in ["vendor", "admin"]: 
-        bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ ကုန်တိုက် App အတွင်းရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ သင့်တည်နေရာကို အတည်ပြုပေးပါ။")
+        bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ ကုန်တိုက် App အတွင်းရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း အတည်ပြုပါ။")
         return db.close()
 
     try:
@@ -299,7 +316,7 @@ def handle_cms_photo(message):
         file_id = message.photo[-1].file_id 
         ai_data = {"name": caption.split('-')[0].strip() if '-' in caption else "New Product", "price": caption.split('-')[1].strip() if '-' in caption else 0, "category": "General", "description": caption, "stock": 10}
         
-        if GROQ_API_KEY and '-' not in caption: 
+        if GROQ_API_KEY and '-' not in caption: # Only call AI if not manually formatted
             try:
                 msg = bot.reply_to(message, "⏳ AI ဖြင့် ပစ္စည်းအချက်အလက်များကို ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -320,7 +337,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (Full Version)
+# ၆။ FRONTEND UI (Auto Location & QR Payments)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -344,7 +361,7 @@ async def serve_frontend():
             @keyframes fadein { from {bottom: 50px; opacity: 0;} to {bottom: 80px; opacity: 1;} }
             @keyframes fadeout { from {bottom: 80px; opacity: 1;} to {bottom: 50px; opacity: 0;} }
             
-            /* Modal / Popup Styles */
+            /* Modal Background Overlay */
             .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 500; display: flex; justify-content: center; align-items: center; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
             .modal-overlay.active { opacity: 1; pointer-events: auto; }
             .modal-content { background: white; width: 90%; max-width: 400px; border-radius: 20px; padding: 24px; transform: translateY(20px); transition: transform 0.3s; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
@@ -356,7 +373,7 @@ async def serve_frontend():
             .status-delivered { background-color: #dcfce3; color: #166534; }
             .status-cancelled { background-color: #fee2e2; color: #dc2626; }
             
-            /* Custom Radio Buttons */
+            /* Radio Button Style */
             .pay-radio:checked + label { border-color: #2563eb; background-color: #eff6ff; }
             .pay-radio:checked + label .radio-dot { background-color: #2563eb; border-color: #2563eb; }
         </style>
@@ -393,10 +410,10 @@ async def serve_frontend():
             <div class="modal-content text-center">
                 <div class="text-4xl mb-3">🏪</div>
                 <h3 class="text-lg font-bold text-gray-800 mb-2">ဆိုင်ရှင် ပရိုဖိုင်း ဖွင့်လှစ်ခြင်း</h3>
-                <p class="text-sm text-gray-500 mb-5">ဝယ်သူများ ယုံကြည်မှုပိုရှိစေရန် သင်၏ တည်နေရာကို အလိုအလျောက် သတ်မှတ်ပေးပါမည်။</p>
+                <p class="text-sm text-gray-500 mb-5">ရောင်းချသူများအတွက် ဝယ်သူများ ယုံကြည်မှုပိုရှိစေရန် သင်၏ တည်နေရာကို အလိုအလျောက် သတ်မှတ်ပေးပါမည်။</p>
                 
                 <button id="btn-get-location" onclick="fetchGPSLocation()" class="w-full bg-blue-100 text-blue-700 font-bold py-3 rounded-xl mb-3 flex items-center justify-center gap-2 transition active:bg-blue-200">
-                    <span>📍</span> တည်နေရာကို အလိုအလျောက် ရယူမည်
+                    <span>📍</span> ကျွန်ုပ်၏တည်နေရာကို ရယူပါ
                 </button>
                 
                 <div id="location-result" class="hidden mb-4">
@@ -448,7 +465,7 @@ async def serve_frontend():
                             <input type="radio" name="pay_method" id="pay-cod" value="COD" class="pay-radio hidden" checked onchange="togglePaymentUI()">
                             <label for="pay-cod" class="flex flex-col items-center justify-center p-3 border-2 border-gray-200 rounded-xl cursor-pointer transition-all">
                                 <span class="text-2xl mb-1">🚚</span>
-                                <span class="text-[11px] font-bold text-gray-700">အိမ်ရောက်ငွေချေ</span>
+                                <span class="text-xs font-bold text-gray-700">အိမ်ရောက်ငွေချေ</span>
                                 <div class="radio-dot w-4 h-4 border-2 border-gray-300 rounded-full mt-2"></div>
                             </label>
                         </div>
@@ -456,7 +473,7 @@ async def serve_frontend():
                             <input type="radio" name="pay_method" id="pay-qr" value="QR" class="pay-radio hidden" onchange="togglePaymentUI()">
                             <label for="pay-qr" class="flex flex-col items-center justify-center p-3 border-2 border-gray-200 rounded-xl cursor-pointer transition-all">
                                 <span class="text-2xl mb-1">📱</span>
-                                <span class="text-[11px] font-bold text-gray-700">QR / Mobile Pay</span>
+                                <span class="text-xs font-bold text-gray-700">QR / Mobile Pay</span>
                                 <div class="radio-dot w-4 h-4 border-2 border-gray-300 rounded-full mt-2"></div>
                             </label>
                         </div>
@@ -474,7 +491,7 @@ async def serve_frontend():
                         <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ အမှတ် (Tx ID)</label>
                         <input type="text" id="checkout-tx" placeholder="ဂဏန်း ၆ လုံး..." class="w-full p-3 mb-3 bg-white rounded-lg border border-gray-200 text-sm outline-none">
                         
-                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ ဓာတ်ပုံတင်ရန်</label>
+                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ ဓာတ်ပုံတင်ရန် (Screenshot)</label>
                         <input type="file" id="checkout-receipt" accept="image/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 cursor-pointer bg-white border border-gray-200 rounded-lg p-1">
                     </div>
 
@@ -560,7 +577,7 @@ async def serve_frontend():
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
-            // ================== SELLER AUTO-LOCATION ==================
+            // ================== SELLER AUTO-LOCATION LOGIC ==================
             function openSellModal() {
                 document.getElementById('sell-modal').classList.add('active');
                 if(document.getElementById('seller-address').value !== "") {
@@ -572,7 +589,7 @@ async def serve_frontend():
             function closeSellModal() { document.getElementById('sell-modal').classList.remove('active'); }
             
             function fetchGPSLocation() {
-                if (!navigator.geolocation) return showToast("ဖုန်းတွင် GPS ဖွင့်ရန် မရနိုင်ပါ။ ကိုယ်တိုင်ရိုက်ထည့်ပါ။");
+                if (!navigator.geolocation) return showToast("ဖုန်းတွင် Location ဖွင့်ရန် မရနိုင်ပါ။ အောက်တွင် ကိုယ်တိုင်ရိုက်ထည့်ပါ။");
                 
                 const btn = document.getElementById('btn-get-location');
                 btn.innerHTML = "⏳ ရှာဖွေနေပါသည်..."; btn.disabled = true;
@@ -606,7 +623,7 @@ async def serve_frontend():
                 if(res.ok) {
                     closeSellModal();
                     document.getElementById('btn-orders').classList.remove('hidden');
-                    tg.showConfirm("✅ အကောင့်ဖွင့်ပြီးပါပြီ။\n\nပစ္စည်းတင်ရန်အတွက် ဤ App ကိုပိတ်ပြီး၊ Bot ဆီသို့ ပစ္စည်းဓာတ်ပုံနှင့် 'အမည် - ဈေးနှုန်း' ကိုပေးပို့လိုက်ပါ။ အခုပဲ ပုံပို့မလား?", (res) => {
+                    tg.showConfirm("✅ အကောင့်ဖွင့်ပြီးပါပြီ။\n\nပစ္စည်းတင်ရန်အတွက် ဤ App ကိုပိတ်ပြီး၊ Bot Chat ထဲသို့ ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' ကို (Caption အဖြစ်) ရိုက်ထည့်၍ ပေးပို့လိုက်ပါ။ အခုပဲ ပုံပို့မလား?", (res) => {
                         if(res) tg.close();
                     });
                 }
@@ -705,6 +722,7 @@ async def serve_frontend():
                 if(isQR) qrSec.classList.remove('hidden'); else qrSec.classList.add('hidden');
             }
 
+            // Image to Base64 (Compression for Telegram Send Photo limitation)
             function compressImageToBase64(file, callback) {
                 const reader = new FileReader();
                 reader.onload = function(e) {
@@ -717,7 +735,7 @@ async def serve_frontend():
                         canvas.width = width; canvas.height = height;
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, width, height);
-                        callback(canvas.toDataURL('image/jpeg', 0.6)); 
+                        callback(canvas.toDataURL('image/jpeg', 0.6)); // 60% quality
                     }
                     img.src = e.target.result;
                 }
@@ -780,14 +798,7 @@ async def serve_frontend():
                             <span class="text-gray-500">${o.pay === 'COD' ? '🚚 အိမ်ရောက်ငွေချေ' : '💳 Mobile Pay'}</span>
                             <span class="font-black text-gray-800 text-[15px]">${(o.price * o.qty).toLocaleString()} Ks</span>
                         </div>
-                        ${o.status === 'pending' ? `<button onclick="cancelOrder(${o.id})" class="mt-3 w-full bg-red-50 text-red-600 hover:bg-red-100 py-2 rounded-lg text-xs font-bold transition-colors">အော်ဒါ ပြန်လည်ပယ်ဖျက်မည်</button>` : ''}
                     </div>`).join('');
-            }
-
-            async function cancelOrder(orderId) {
-                if(!confirm("ဤအော်ဒါကို ဖျက်သိမ်းမှာ သေချာပါသလား?")) return;
-                const res = await apiFetch(`/api/buyer/orders/${orderId}/cancel`, {method: 'POST'});
-                if(res.ok) { showToast("အော်ဒါ ဖျက်သိမ်းပြီးပါပြီ။"); loadBuyerOrders(); }
             }
             
             // ================== VENDOR MANAGEMENT ==================
@@ -810,7 +821,7 @@ async def serve_frontend():
                         <div class="absolute left-0 top-0 bottom-0 w-1 status-${o.status}"></div>
                         <div class="flex justify-between mb-3 pl-2">
                             <div class="text-sm font-bold text-gray-800 pr-2">${o.name} <span class="text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded text-xs ml-1">x${o.qty}</span></div>
-                            <div class="text-[10px] uppercase font-bold status-${o.status} px-2 py-1 rounded whitespace-nowrap">${statusNames[o.status].split(' ')[0]}</div>
+                            <div class="text-[10px] uppercase font-bold status-${o.status} px-2 py-1 rounded whitespace-nowrap">${o.status}</div>
                         </div>
                         <div class="bg-gray-50 p-3 rounded-xl text-[13px] text-gray-700 mb-3 border border-gray-200 ml-2">
                             <div class="mb-1"><span class="font-bold text-gray-500">ဝယ်သူ:</span> <span class="font-medium">${o.buyer}</span></div>
