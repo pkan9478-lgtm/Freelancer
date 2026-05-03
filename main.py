@@ -6,6 +6,8 @@ import threading
 import datetime
 import time
 import requests
+import base64
+from io import BytesIO
 from urllib.parse import parse_qs
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse, Response
@@ -25,10 +27,11 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID") 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
-# Platform Payment Info (Escrow/Admin Default)
+# ဆိုင်ရှင်/Admin ၏ ငွေလက်ခံမည့် အချက်အလက်များ
 PAYMENT_INFO = {
     "kpay": "09123456789 (Digital Mall)",
-    "wave": "09123456789 (Digital Mall)"
+    "wave": "09123456789 (Digital Mall)",
+    "qr_url": "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=09123456789" 
 }
 
 bot = TeleBot(BOT_TOKEN)
@@ -39,9 +42,7 @@ try:
     if REDIS_URL:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
-        print("✅ Redis Connected")
 except: 
-    print("⚠️ Redis Not Connected")
     redis_client = None
 
 # ==========================================
@@ -82,7 +83,8 @@ class Order(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Integer, default=1) 
-    transaction_id = Column(String) 
+    payment_method = Column(String, default="COD") 
+    transaction_id = Column(String, default="") 
     address = Column(String) 
     status = Column(String, default="pending") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -129,7 +131,7 @@ def get_telegram_image(file_id: str):
     except: raise HTTPException(status_code=404)
 
 # ==========================================
-# ၄။ API ENDPOINTS (Dynamic JSON & Core Logic)
+# ၄။ API ENDPOINTS
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
@@ -140,28 +142,15 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }, "payment_info": PAYMENT_INFO
     }
 
-# 📍 5-TIER LOCATION API (Auto Create & Fetch JSON)
-@app.get("/api/locations")
-def get_locations():
-    file_path = os.path.join(DATA_DIR, "locations.json")
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
-    else:
-        sample_data = {
-            "ရန်ကုန်တိုင်းဒေသကြီး": {
-                "ရန်ကုန်အနောက်ပိုင်းခရိုင်": {
-                    "ကမာရွတ်မြို့နယ်": { "ကမာရွတ်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "အမှတ်(၂) ရပ်ကွက်"] },
-                    "လှိုင်မြို့နယ်": { "လှိုင်(မြို့ပေါ်)": ["အမှတ်(၁) ရပ်ကွက်", "ဘူတာရုံရပ်ကွက်"] }
-                }
-            },
-            "မန္တလေးတိုင်းဒေသကြီး": {
-                "မန္တလေးခရိုင်": {
-                    "ချမ်းအေးသာစံမြို့နယ်": { "ချမ်းအေးသာစံ(မြို့ပေါ်)": ["မြို့မ", "ပတ်ကုန်း"] }
-                }
-            }
-        }
-        with open(file_path, "w", encoding="utf-8") as f: json.dump(sample_data, f, ensure_ascii=False, indent=4)
-        return sample_data
+# အလိုအလျောက် လိပ်စာ သိမ်းဆည်းရန်နှင့် Vendor အဖြစ်မြှင့်တင်ရန်
+@app.post("/api/user/address")
+async def update_user_address(req: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    data = await req.json()
+    if "address" in data: user.default_address = data["address"]
+    if "phone" in data: user.phone = data["phone"]
+    if user.role == "buyer": user.role = "vendor"
+    db.commit()
+    return {"status": "success"}
 
 @app.get("/api/products")
 def get_products(category: str = "All", search: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
@@ -177,13 +166,15 @@ def get_products(category: str = "All", search: str = "", skip: int = 0, limit: 
 async def checkout_cart(req: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = await req.json()
     cart_items = data.get('cart', []) 
-    tx_id = data.get('transaction_id', 'Unknown')
+    payment_method = data.get('payment_method', 'COD')
+    tx_id = data.get('transaction_id', '')
     address = data.get('address', 'Unknown')
     phone = data.get('phone', '')
+    receipt_b64 = data.get('receipt_b64', '')
 
     if not cart_items: raise HTTPException(status_code=400, detail="Cart is empty")
     total_amount, ordered_names = 0, []
-    vendors_to_notify = set()
+    vendors_to_notify = {}
 
     for item in cart_items:
         p_id = item.get('id')
@@ -191,11 +182,15 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         product = db.query(Product).filter(Product.id == p_id).with_for_update().first()
         
         if product and product.stock >= qty:
-            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address))
+            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, payment_method=payment_method, transaction_id=tx_id, address=address))
             product.stock -= qty 
             total_amount += (product.price * qty)
             ordered_names.append(f"{product.name} (x{qty})")
-            if product.vendor: vendors_to_notify.add((product.vendor.telegram_id, product.name, qty))
+            
+            if product.vendor: 
+                v_id = product.vendor.telegram_id
+                if v_id not in vendors_to_notify: vendors_to_notify[v_id] = []
+                vendors_to_notify[v_id].append(f"{product.name} (x{qty})")
         else:
             db.rollback()
             raise HTTPException(status_code=400, detail=f"'{product.name if product else 'Item'}' ပစ္စည်းလက်ကျန်မလုံလောက်ပါ။")
@@ -204,39 +199,52 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
     if phone and user.phone != phone: user.phone = phone
     db.commit()
 
+    img_data = None
+    if receipt_b64 and "," in receipt_b64:
+        try:
+            encoded = receipt_b64.split(",", 1)[1]
+            img_data = base64.b64decode(encoded)
+        except: pass
+
     try:
         items_str = "\n".join([f"- {n}" for n in ordered_names])
-        bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nပို့ဆောင်ရမည့်လိပ်စာ: {address}\nTx ID: `{tx_id}`\n\n_ရောင်းချသူမှ ငွေသွင်းမှတ်တမ်း စစ်ဆေးပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
-        for v_tg_id, p_name, qty in vendors_to_notify:
-            bot.send_message(v_tg_id, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name}\nပစ္စည်း: {p_name} (x{qty})\nလိပ်စာ: {address}\nTx ID: `{tx_id}`\n\nApp ထဲတွင် အော်ဒါအခြေအနေကို အတည်ပြုပေးပါ။", parse_mode="Markdown")
+        pay_str = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"Mobile Pay (Tx: {tx_id})"
+        
+        bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nငွေချေစနစ်: {pay_str}\nပို့ဆောင်ရမည့်လိပ်စာ: {address}", parse_mode="Markdown")
+        
+        for v_tg_id, p_list in vendors_to_notify.items():
+            v_items = "\n".join([f"- {n}" for n in p_list])
+            notify_msg = f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name}\nလိပ်စာ: {address}\nဖုန်း: {phone}\nငွေချေစနစ်: {pay_str}\n\nပစ္စည်းများ:\n{v_items}"
+            if img_data and payment_method == "QR":
+                bot.send_photo(v_tg_id, BytesIO(img_data), caption=notify_msg)
+            else:
+                bot.send_message(v_tg_id, notify_msg, parse_mode="Markdown")
     except: pass
     return {"status": "success"}
 
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     orders = db.query(Order).filter(Order.user_id == user.id).order_by(Order.created_at.desc()).all()
-    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%Y-%m-%d")} for o in orders]
+    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "pay": o.payment_method, "date": o.created_at.strftime("%Y-%m-%d")} for o in orders]
 
 @app.post("/api/buyer/orders/{order_id}/cancel")
 def cancel_buyer_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     order = db.query(Order).filter(Order.id == order_id, Order.user_id == user.id).first()
-    if not order: raise HTTPException(status_code=404)
-    if order.status != "pending": raise HTTPException(status_code=400)
+    if not order or order.status != "pending": raise HTTPException(status_code=400)
     order.status = "cancelled"
     order.product.stock += order.quantity 
     db.commit()
     return {"status": "success"}
 
-# MULTI-VENDOR ENDPOINTS
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id).order_by(Order.created_at.desc()).all()
-    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status} for o in orders]
+    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "pay": o.payment_method, "tx": o.transaction_id, "addr": o.address, "status": o.status} for o in orders]
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    status_map = {"approved": "✅ ငွေလွှဲမှန်ကန်ပါသည်။ ထုပ်ပိုးနေပါသည်။", "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"}
+    status_map = {"approved": "✅ အတည်ပြုပါသည်။ ထုပ်ပိုးနေပါသည်။", "shipped": "🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "delivered": "🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "cancelled": "❌ အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။"}
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order or (order.product.vendor_id != user.id and user.role != "admin"): raise HTTPException(status_code=400)
     
@@ -262,16 +270,6 @@ async def update_product_stock(product_id: int, request: Request, user: User = D
     if product: product.stock = data.get("stock", product.stock); db.commit()
     return {"status": "success"}
 
-@app.put("/api/vendor/products/{product_id}/edit")
-async def edit_product_info(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    data = await request.json()
-    product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if product:
-        if "name" in data: product.name = data["name"]
-        if "price" in data: product.price = float(data["price"])
-        db.commit()
-    return {"status": "success"}
-
 @app.delete("/api/vendor/products/{product_id}")
 def delete_product(product_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
@@ -279,34 +277,29 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
     return {"status": "success"}
 
 # ==========================================
-# ၅။ AI-POWERED CMS & CHAT BOT (Seamless Vendor Onboarding)
+# ၅။ AI-POWERED CMS & CHAT BOT
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🏬 ကုန်တိုက်သို့ဝင်ရန်", web_app=types.WebAppInfo(WEBAPP_URL)))
-    msg = """မင်္ဂလာပါရှင်။ 
-🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။
-📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** ရောင်းချလိုသည့် ပစ္စည်းဓာတ်ပုံနှင့်တကွ အမည်၊ ဈေးနှုန်းတို့ကို ဤ Chat ထဲသို့ (Caption တပ်၍) တိုက်ရိုက်ပေးပို့လိုက်ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
+    msg = """မင်္ဂလာပါရှင်။ \n🛍️ **ဈေးဝယ်လိုပါက** အောက်ပါခလုတ်ကို နှိပ်၍ ဝင်ရောက်နိုင်ပါသည်။\n📦 **မိမိပစ္စည်းများကို ရောင်းချလိုပါက** Web App ထဲရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ ပရိုဖိုင်း ဖွင့်လှစ်ပါ။ ပြီးပါက ပစ္စည်းဓာတ်ပုံနှင့်တကွ 'အမည် - ဈေးနှုန်း' ကိုပေးပို့ရုံဖြင့် AI မှ အလိုအလျောက် စာရင်းသွင်း ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
     bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['photo'])
 def handle_cms_photo(message):
     db = SessionLocal()
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
-    if not user: return db.close()
-
-    # 📌 Feature: Seamlessly Auto-Upgrade normal buyers to Vendors upon first upload
-    if user.role == "buyer":
-        user.role = "vendor"
-        db.commit()
+    if not user or user.role not in ["vendor", "admin"]: 
+        bot.reply_to(message, "⚠️ ကျေးဇူးပြု၍ ကုန်တိုက် App အတွင်းရှိ 'ရောင်းမည်' ခလုတ်ကို အရင်နှိပ်၍ သင့်တည်နေရာကို အတည်ပြုပေးပါ။")
+        return db.close()
 
     try:
         caption = message.caption or "New Product"
         file_id = message.photo[-1].file_id 
-        ai_data = {"name": "New Product", "price": 0, "category": "General", "description": caption, "stock": 10}
+        ai_data = {"name": caption.split('-')[0].strip() if '-' in caption else "New Product", "price": caption.split('-')[1].strip() if '-' in caption else 0, "category": "General", "description": caption, "stock": 10}
         
-        if GROQ_API_KEY:
+        if GROQ_API_KEY and '-' not in caption: 
             try:
                 msg = bot.reply_to(message, "⏳ AI ဖြင့် ပစ္စည်းအချက်အလက်များကို ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -323,11 +316,11 @@ def handle_cms_photo(message):
         db.add(new_product)
         db.commit()
         bot.reply_to(message, f"✅ **ပစ္စည်း အလိုအလျောက် တင်ပြီးပါပြီ။**\n\n📌 အမည်: {ai_data['name']}\n💰 ဈေးနှုန်း: {ai_data['price']} Ks\n📦 အရေအတွက်: {ai_data['stock']}\n\n_App ထဲသို့ဝင်၍ 'စီမံရန်' Tab တွင် အလွယ်တကူ ထပ်မံပြင်ဆင်နိုင်ပါသည်။_", parse_mode="Markdown")
-    except Exception as e: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
+    except Exception as e: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။ ('အမည် - ဈေးနှုန်း' ပုံစံဖြင့် ရေးပို့ပေးပါ)")
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (Full Version with "Sell" Button)
+# ၆။ FRONTEND UI (Full Version)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -344,20 +337,28 @@ async def serve_frontend():
             body { font-family: sans-serif; -webkit-tap-highlight-color: transparent; background-color: #f3f4f6; }
             .tab-btn.active { color: #2563eb; border-bottom: 3px solid #2563eb; }
             .cat-chip.active { background-color: #2563eb; color: white; border-color: #2563eb; }
-            .cart-badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2);}
+            .cart-badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold;}
             
-            #toast { visibility: hidden; min-width: 250px; background-color: rgba(31, 41, 55, 0.95); color: #fff; text-align: center; border-radius: 12px; padding: 14px; position: fixed; z-index: 100; left: 50%; bottom: 80px; transform: translateX(-50%); font-size: 14px; backdrop-filter: blur(4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+            #toast { visibility: hidden; min-width: 250px; background-color: rgba(31, 41, 55, 0.95); color: #fff; text-align: center; border-radius: 12px; padding: 14px; position: fixed; z-index: 1000; left: 50%; bottom: 80px; transform: translateX(-50%); font-size: 14px; backdrop-filter: blur(4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
             #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 2.5s; }
             @keyframes fadein { from {bottom: 50px; opacity: 0;} to {bottom: 80px; opacity: 1;} }
             @keyframes fadeout { from {bottom: 80px; opacity: 1;} to {bottom: 50px; opacity: 0;} }
             
+            /* Modal / Popup Styles */
+            .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 500; display: flex; justify-content: center; align-items: center; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+            .modal-overlay.active { opacity: 1; pointer-events: auto; }
+            .modal-content { background: white; width: 90%; max-width: 400px; border-radius: 20px; padding: 24px; transform: translateY(20px); transition: transform 0.3s; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); }
+            .modal-overlay.active .modal-content { transform: translateY(0); }
+
             .status-pending { background-color: #fef3c7; color: #d97706; }
             .status-approved { background-color: #dbeafe; color: #2563eb; }
             .status-shipped { background-color: #f3e8ff; color: #9333ea; }
             .status-delivered { background-color: #dcfce3; color: #166534; }
             .status-cancelled { background-color: #fee2e2; color: #dc2626; }
-            .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; text-align: center; color: #6b7280; }
-            .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+            
+            /* Custom Radio Buttons */
+            .pay-radio:checked + label { border-color: #2563eb; background-color: #eff6ff; }
+            .pay-radio:checked + label .radio-dot { background-color: #2563eb; border-color: #2563eb; }
         </style>
     </head>
     <body class="pb-20">
@@ -367,28 +368,47 @@ async def serve_frontend():
             <div class="flex items-center gap-3">
                 <div class="text-xs bg-gray-100 px-3 py-1.5 rounded-full text-gray-700 font-medium max-w-[120px] truncate border border-gray-200" id="display-name">...</div>
                 <button onclick="showTab('cart-tab', 'btn-shop')" class="relative p-2.5 rounded-full bg-blue-50 text-blue-600 active:bg-blue-100 transition">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                    <span id="cart-count" class="cart-badge hidden">0</span>
+                    🛒<span id="cart-count" class="cart-badge hidden">0</span>
                 </button>
             </div>
         </header>
 
-        <div class="fixed bottom-0 w-full bg-white border-t flex justify-around text-xs font-medium text-gray-500 z-50 pb-safe shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
+        <div class="fixed bottom-0 w-full bg-white border-t flex justify-around text-xs font-medium text-gray-500 z-40 pb-safe shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
             <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn active flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
                 <span class="text-[20px]">🏠</span><span>ဝယ်မည်</span>
             </button>
-            
-            <button onclick="triggerSell()" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors relative">
+            <button onclick="openSellModal()" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors relative">
                 <div class="absolute -top-3 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-4 border-white text-2xl pb-1">+</div>
                 <span class="mt-6 font-bold text-blue-600">ရောင်းမည်</span>
             </button>
-
             <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
                 <span class="text-[20px]">📋</span><span>မှတ်တမ်း</span>
             </button>
             <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn hidden flex-1 py-3 flex flex-col items-center gap-1 transition-colors">
                 <span class="text-[20px]">⚙️</span><span>စီမံရန်</span>
             </button>
+        </div>
+
+        <div id="sell-modal" class="modal-overlay">
+            <div class="modal-content text-center">
+                <div class="text-4xl mb-3">🏪</div>
+                <h3 class="text-lg font-bold text-gray-800 mb-2">ဆိုင်ရှင် ပရိုဖိုင်း ဖွင့်လှစ်ခြင်း</h3>
+                <p class="text-sm text-gray-500 mb-5">ဝယ်သူများ ယုံကြည်မှုပိုရှိစေရန် သင်၏ တည်နေရာကို အလိုအလျောက် သတ်မှတ်ပေးပါမည်။</p>
+                
+                <button id="btn-get-location" onclick="fetchGPSLocation()" class="w-full bg-blue-100 text-blue-700 font-bold py-3 rounded-xl mb-3 flex items-center justify-center gap-2 transition active:bg-blue-200">
+                    <span>📍</span> တည်နေရာကို အလိုအလျောက် ရယူမည်
+                </button>
+                
+                <div id="location-result" class="hidden mb-4">
+                    <input type="text" id="seller-address" placeholder="အိမ်လိပ်စာ အတိအကျ..." class="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm mb-2 outline-none focus:ring-1 focus:ring-blue-500">
+                    <input type="tel" id="seller-phone" placeholder="ဆက်သွယ်ရန် ဖုန်းနံပါတ်..." class="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                </div>
+
+                <button id="btn-confirm-sell" onclick="confirmSellerProfile()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md transition active:bg-blue-700 hidden">
+                    အတည်ပြုပြီး ပစ္စည်းတင်မည်
+                </button>
+                <button onclick="closeSellModal()" class="mt-4 text-sm font-bold text-gray-400">ပယ်ဖျက်မည်</button>
+            </div>
         </div>
 
         <div id="shop-tab" class="tab-content">
@@ -408,10 +428,9 @@ async def serve_frontend():
                 <button onclick="clearCart()" class="text-sm text-red-500 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-lg transition-colors font-medium">အကုန်ဖျက်မည်</button>
             </div>
             
-            <div id="cart-empty-state" class="empty-state hidden bg-white rounded-2xl shadow-sm border border-gray-100">
-                <div class="empty-icon">🛍️</div>
-                <p class="font-medium text-gray-800">ခြင်းတောင်းထဲတွင် ပစ္စည်းမရှိသေးပါ</p>
-                <button onclick="showTab('shop-tab', 'btn-shop')" class="mt-4 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-bold">ဈေးဝယ်ရန် သွားမည်</button>
+            <div id="cart-empty-state" class="text-center py-10 bg-white rounded-2xl shadow-sm border border-gray-100 hidden">
+                <div class="text-4xl mb-3 opacity-50">🛍️</div>
+                <p class="font-medium text-gray-800">ခြင်းတောင်းထဲတွင် ပစ္စည်းမရှိပါ</p>
             </div>
 
             <div id="cart-content-wrapper">
@@ -423,69 +442,48 @@ async def serve_frontend():
                         <span id="cart-total" class="text-blue-600 text-2xl">0 Ks</span>
                     </div>
 
-                    <div class="bg-blue-50 border border-blue-100 p-4 rounded-xl mb-5 text-sm text-blue-800 shadow-inner">
-                        <p class="font-bold mb-2 flex items-center gap-1"><span>💳</span> ငွေပေးချေရန် အကောင့်များ</p>
-                        <div class="grid grid-cols-1 gap-2">
-                            <div class="bg-white p-2 rounded flex justify-between items-center"><span class="font-bold text-blue-900">KPay</span> <span id="pay-kpay" class="font-mono">Loading...</span></div>
-                            <div class="bg-white p-2 rounded flex justify-between items-center"><span class="font-bold text-yellow-600">Wave</span> <span id="pay-wave" class="font-mono">Loading...</span></div>
+                    <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-1"><span>💳</span> ငွေပေးချေမည့် စနစ်ရွေးချယ်ရန်</h3>
+                    <div class="grid grid-cols-2 gap-3 mb-5">
+                        <div class="relative">
+                            <input type="radio" name="pay_method" id="pay-cod" value="COD" class="pay-radio hidden" checked onchange="togglePaymentUI()">
+                            <label for="pay-cod" class="flex flex-col items-center justify-center p-3 border-2 border-gray-200 rounded-xl cursor-pointer transition-all">
+                                <span class="text-2xl mb-1">🚚</span>
+                                <span class="text-[11px] font-bold text-gray-700">အိမ်ရောက်ငွေချေ</span>
+                                <div class="radio-dot w-4 h-4 border-2 border-gray-300 rounded-full mt-2"></div>
+                            </label>
+                        </div>
+                        <div class="relative">
+                            <input type="radio" name="pay_method" id="pay-qr" value="QR" class="pay-radio hidden" onchange="togglePaymentUI()">
+                            <label for="pay-qr" class="flex flex-col items-center justify-center p-3 border-2 border-gray-200 rounded-xl cursor-pointer transition-all">
+                                <span class="text-2xl mb-1">📱</span>
+                                <span class="text-[11px] font-bold text-gray-700">QR / Mobile Pay</span>
+                                <div class="radio-dot w-4 h-4 border-2 border-gray-300 rounded-full mt-2"></div>
+                            </label>
                         </div>
                     </div>
 
-                    <div class="bg-gray-50 border border-gray-200 p-4 rounded-xl mb-5">
-                        <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-1"><span>📍</span> ပို့ဆောင်ရမည့် လိပ်စာ အတိအကျရွေးချယ်ရန်</h3>
+                    <div id="qr-payment-section" class="hidden bg-blue-50 border border-blue-100 p-4 rounded-xl mb-5 shadow-inner">
+                        <div class="text-center mb-3">
+                            <img id="qr-image" src="" alt="QR Code" class="mx-auto w-32 h-32 rounded-lg shadow-sm border border-gray-200">
+                        </div>
+                        <div class="space-y-2 mb-4 text-sm text-blue-900">
+                            <div class="bg-white p-2 rounded flex justify-between"><b>KPay:</b> <span id="pay-kpay"></span></div>
+                            <div class="bg-white p-2 rounded flex justify-between"><b>Wave:</b> <span id="pay-wave"></span></div>
+                        </div>
                         
-                        <div class="space-y-3">
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">တိုင်းဒေသကြီး / ပြည်နယ်</label>
-                                <select id="sel-state" onchange="updateDistricts()" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none">
-                                    <option value="">-- ဒေတာရယူနေပါသည်... --</option>
-                                </select>
-                            </div>
-                            
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">ခရိုင်</label>
-                                <select id="sel-district" onchange="updateTownships()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
-                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">မြို့နယ်</label>
-                                <select id="sel-township" onchange="updateTracts()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
-                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">မြို့ပေါ် / ကျေးရွာအုပ်စု</label>
-                                <select id="sel-tract" onchange="updateVillages()" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
-                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">ရပ်ကွက် / ကျေးရွာ</label>
-                                <select id="sel-village" disabled class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none appearance-none disabled:bg-gray-100">
-                                    <option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">အိမ်အမှတ် နှင့် လမ်းအမည် (Optional)</label>
-                                <input type="text" id="input-street" placeholder="ဥပမာ - အမှတ်(၁)၊ ဗိုလ်ချုပ်လမ်း..." class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-                            </div>
-
-                            <div>
-                                <label class="block text-xs text-gray-500 mb-1">ဆက်သွယ်ရန် ဖုန်းနံပါတ်</label>
-                                <input type="tel" id="input-phone" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-                            </div>
-                        </div>
+                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ အမှတ် (Tx ID)</label>
+                        <input type="text" id="checkout-tx" placeholder="ဂဏန်း ၆ လုံး..." class="w-full p-3 mb-3 bg-white rounded-lg border border-gray-200 text-sm outline-none">
+                        
+                        <label class="block text-xs font-bold text-gray-600 mb-1.5">ငွေလွှဲပြေစာ ဓာတ်ပုံတင်ရန်</label>
+                        <input type="file" id="checkout-receipt" accept="image/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 cursor-pointer bg-white border border-gray-200 rounded-lg p-1">
                     </div>
 
-                    <label class="block text-xs font-bold text-gray-600 mb-1.5 ml-1">ငွေလွှဲပြေစာ အမှတ် (Tx ID)</label>
-                    <input type="text" id="checkout-tx" placeholder="ဂဏန်း ၆ လုံး..." class="w-full p-3 mb-6 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <h3 class="font-bold text-gray-700 mb-3 text-sm flex items-center gap-1"><span>📍</span> ပို့ဆောင်ရမည့် လိပ်စာ</h3>
+                    <textarea id="checkout-address" placeholder="အိမ်အမှတ်၊ လမ်း၊ မြို့နယ် အတိအကျ..." rows="3" class="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-3"></textarea>
                     
-                    <button onclick="checkoutCart()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold transition-all text-lg flex justify-center items-center gap-2">
+                    <input type="tel" id="checkout-phone" placeholder="ဆက်သွယ်ရန် ဖုန်းနံပါတ်..." class="w-full p-3 mb-6 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+
+                    <button onclick="checkoutCart()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-bold transition-all text-lg flex justify-center items-center gap-2 shadow-lg">
                         အတည်ပြုပြီး အော်ဒါတင်မည်
                     </button>
                 </div>
@@ -513,95 +511,6 @@ async def serve_frontend():
             const initData = tg.initData; 
             let allProducts = [], currentCategory = 'All', cart = [];
             let searchTimeout = null;
-            let mmData = {}; 
-
-            // 📌 Feature: Sell Product Trigger (Frictionless Upload)
-            function triggerSell() {
-                if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
-                tg.showConfirm("ပစ္စည်းရောင်းချရန်အတွက် ဤ App ကိုခေတ္တပိတ်ပြီး၊ Bot Chat ထဲသို့ ရောင်းချလိုသော ပစ္စည်းဓာတ်ပုံနှင့်တကွ အမည်၊ ဈေးနှုန်းများကို (Caption အဖြစ်) ရိုက်ထည့်၍ ပေးပို့လိုက်ပါ။ AI မှ အလိုအလျောက် စာရင်းသွင်းပေးပါမည်။ အခုပဲ App ကိုပိတ်ပြီး ပုံပို့မလား?", function(result) {
-                    if(result) tg.close();
-                });
-            }
-
-            // ==========================================
-            // 📍 DYNAMIC LOCATION FETCH & RENDER LOGIC
-            // ==========================================
-            async function fetchLocationData() {
-                try {
-                    const res = await fetch('/api/locations');
-                    mmData = await res.json();
-                    initLocations();
-                } catch (error) {
-                    console.error("Error loading location data:", error);
-                    document.getElementById("sel-state").innerHTML = '<option value="">-- ဒေတာ ရယူရန် အခက်အခဲဖြစ်နေပါသည် --</option>';
-                }
-            }
-
-            function initLocations() {
-                const stateSel = document.getElementById("sel-state");
-                stateSel.innerHTML = '<option value="">-- ရွေးချယ်ပါ --</option>';
-                for (let state in mmData) stateSel.innerHTML += `<option value="${state}">${state}</option>`;
-            }
-
-            function updateDistricts() {
-                const state = document.getElementById("sel-state").value;
-                const distSel = document.getElementById("sel-district");
-                resetDropdowns(["sel-district", "sel-township", "sel-tract", "sel-village"]);
-
-                if (state && mmData[state]) {
-                    distSel.disabled = false;
-                    for (let district in mmData[state]) distSel.innerHTML += `<option value="${district}">${district}</option>`;
-                }
-            }
-
-            function updateTownships() {
-                const state = document.getElementById("sel-state").value;
-                const district = document.getElementById("sel-district").value;
-                const tspSel = document.getElementById("sel-township");
-                resetDropdowns(["sel-township", "sel-tract", "sel-village"]);
-
-                if (state && district && mmData[state][district]) {
-                    tspSel.disabled = false;
-                    for (let tsp in mmData[state][district]) tspSel.innerHTML += `<option value="${tsp}">${tsp}</option>`;
-                }
-            }
-
-            function updateTracts() {
-                const state = document.getElementById("sel-state").value;
-                const district = document.getElementById("sel-district").value;
-                const tsp = document.getElementById("sel-township").value;
-                const tractSel = document.getElementById("sel-tract");
-                resetDropdowns(["sel-tract", "sel-village"]);
-
-                if (state && district && tsp && mmData[state][district][tsp]) {
-                    tractSel.disabled = false;
-                    for (let tract in mmData[state][district][tsp]) tractSel.innerHTML += `<option value="${tract}">${tract}</option>`;
-                }
-            }
-
-            function updateVillages() {
-                const state = document.getElementById("sel-state").value;
-                const district = document.getElementById("sel-district").value;
-                const tsp = document.getElementById("sel-township").value;
-                const tract = document.getElementById("sel-tract").value;
-                const villageSel = document.getElementById("sel-village");
-                resetDropdowns(["sel-village"]);
-
-                if (state && district && tsp && tract && mmData[state][district][tsp][tract]) {
-                    villageSel.disabled = false;
-                    mmData[state][district][tsp][tract].forEach(v => {
-                        villageSel.innerHTML += `<option value="${v}">${v}</option>`;
-                    });
-                }
-            }
-
-            function resetDropdowns(ids) {
-                ids.forEach(id => {
-                    const el = document.getElementById(id);
-                    el.innerHTML = '<option value="">-- အထက်ပါအကွက်ကို အရင်ရွေးပါ --</option>';
-                    el.disabled = true;
-                });
-            }
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -616,16 +525,22 @@ async def serve_frontend():
 
             async function initApp() {
                 tg.expand(); tg.ready();
-                fetchLocationData(); 
-
                 try {
                     const res = await apiFetch('/api/auth');
                     const data = await res.json();
                     document.getElementById('display-name').innerText = data.user.name;
-                    if(data.user.phone) document.getElementById('input-phone').value = data.user.phone;
+                    if(data.user.phone) {
+                        document.getElementById('checkout-phone').value = data.user.phone;
+                        document.getElementById('seller-phone').value = data.user.phone;
+                    }
+                    if(data.user.default_address) {
+                        document.getElementById('checkout-address').value = data.user.default_address;
+                        document.getElementById('seller-address').value = data.user.default_address;
+                    }
                     if(data.payment_info) {
                         document.getElementById('pay-kpay').innerText = data.payment_info.kpay;
                         document.getElementById('pay-wave').innerText = data.payment_info.wave;
+                        document.getElementById('qr-image').src = data.payment_info.qr_url;
                     }
                     if (['vendor', 'admin'].includes(data.user.role)) document.getElementById('btn-orders').classList.remove('hidden');
                     loadProducts();
@@ -645,6 +560,59 @@ async def serve_frontend():
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
+            // ================== SELLER AUTO-LOCATION ==================
+            function openSellModal() {
+                document.getElementById('sell-modal').classList.add('active');
+                if(document.getElementById('seller-address').value !== "") {
+                    document.getElementById('btn-get-location').classList.add('hidden');
+                    document.getElementById('location-result').classList.remove('hidden');
+                    document.getElementById('btn-confirm-sell').classList.remove('hidden');
+                }
+            }
+            function closeSellModal() { document.getElementById('sell-modal').classList.remove('active'); }
+            
+            function fetchGPSLocation() {
+                if (!navigator.geolocation) return showToast("ဖုန်းတွင် GPS ဖွင့်ရန် မရနိုင်ပါ။ ကိုယ်တိုင်ရိုက်ထည့်ပါ။");
+                
+                const btn = document.getElementById('btn-get-location');
+                btn.innerHTML = "⏳ ရှာဖွေနေပါသည်..."; btn.disabled = true;
+
+                navigator.geolocation.getCurrentPosition(async (pos) => {
+                    const lat = pos.coords.latitude; const lon = pos.coords.longitude;
+                    try {
+                        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=my`);
+                        const data = await res.json();
+                        let address = data.display_name || "လိပ်စာ အတိအကျမရပါ။ ကိုယ်တိုင်ပြင်ဆင်ပါ။";
+                        
+                        document.getElementById('seller-address').value = address;
+                        btn.classList.add('hidden');
+                        document.getElementById('location-result').classList.remove('hidden');
+                        document.getElementById('btn-confirm-sell').classList.remove('hidden');
+                    } catch(e) { showToast("လိပ်စာရှာမရပါ။ ကိုယ်တိုင်ရိုက်ထည့်ပါ။"); }
+                }, (err) => {
+                    showToast("GPS ဖွင့်ခွင့်ပြုရန် လိုအပ်ပါသည်။ ကိုယ်တိုင်ရိုက်ထည့်ပါ။");
+                    btn.classList.add('hidden');
+                    document.getElementById('location-result').classList.remove('hidden');
+                    document.getElementById('btn-confirm-sell').classList.remove('hidden');
+                });
+            }
+
+            async function confirmSellerProfile() {
+                const addr = document.getElementById('seller-address').value;
+                const ph = document.getElementById('seller-phone').value;
+                if(!addr || !ph) return showToast("လိပ်စာနှင့် ဖုန်းနံပါတ် ဖြည့်ပါ။");
+                
+                const res = await apiFetch('/api/user/address', { method: 'POST', body: JSON.stringify({address: addr, phone: ph}) });
+                if(res.ok) {
+                    closeSellModal();
+                    document.getElementById('btn-orders').classList.remove('hidden');
+                    tg.showConfirm("✅ အကောင့်ဖွင့်ပြီးပါပြီ။\n\nပစ္စည်းတင်ရန်အတွက် ဤ App ကိုပိတ်ပြီး၊ Bot ဆီသို့ ပစ္စည်းဓာတ်ပုံနှင့် 'အမည် - ဈေးနှုန်း' ကိုပေးပို့လိုက်ပါ။ အခုပဲ ပုံပို့မလား?", (res) => {
+                        if(res) tg.close();
+                    });
+                }
+            }
+
+            // ================== PRODUCTS & CART ==================
             async function loadProducts(query = "") {
                 document.getElementById('product-list').innerHTML = '<div class="col-span-2 text-center text-gray-400 py-10">Loading...</div>';
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`);
@@ -658,33 +626,24 @@ async def serve_frontend():
                 renderProducts(allProducts);
             }
 
-            function filterCategory(cat) { 
-                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                currentCategory = cat; document.getElementById('search-box').value = "";
-                loadProducts(); 
-            }
+            function filterCategory(cat) { currentCategory = cat; document.getElementById('search-box').value = ""; loadProducts(); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
 
             function renderProducts(products) {
-                if(products.length === 0) {
-                    document.getElementById('product-list').innerHTML = `<div class="col-span-2 empty-state bg-white rounded-2xl shadow-sm border border-gray-100"><div class="empty-icon">🔍</div><p>ရှာဖွေမှုနှင့် ကိုက်ညီသော ပစ္စည်းမရှိပါ</p></div>`;
-                    return;
-                }
+                if(products.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center text-gray-400 py-10">ပစ္စည်းမရှိပါ</div>`;
                 document.getElementById('product-list').innerHTML = products.map(p => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300?text=No+Image';
                     const isOut = p.stock <= 0;
                     return `
-                    <div class="bg-white rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col relative transition-transform active:scale-95 ${isOut ? 'opacity-60 grayscale-[50%]' : ''}">
-                        ${isOut ? '<div class="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm z-10">ကုန်နေပါသည်</div>' : ''}
-                        <div class="relative"><img src="${imgSrc}" class="w-full h-40 object-cover border-b border-gray-50"></div>
-                        <div class="p-3 flex-grow flex flex-col justify-between bg-white">
+                    <div class="bg-white rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-gray-100 overflow-hidden flex flex-col ${isOut ? 'opacity-60 grayscale-[50%]' : ''}">
+                        ${isOut ? '<div class="absolute bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm z-10 m-2">ကုန်နေပါသည်</div>' : ''}
+                        <img src="${imgSrc}" class="w-full h-40 object-cover border-b border-gray-50">
+                        <div class="p-3 flex-grow flex flex-col justify-between">
                             <div>
                                 <div class="text-[13px] font-bold text-gray-800 line-clamp-2 leading-tight">${p.name}</div>
                                 <div class="text-blue-600 text-[15px] font-black mt-1.5">${p.price.toLocaleString()} Ks</div>
                             </div>
-                            <button onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price}, ${p.stock})" class="mt-3 w-full ${isOut?'bg-gray-100 text-gray-400':'bg-blue-50 text-blue-700 hover:bg-blue-100'} py-2.5 rounded-xl font-bold text-sm transition-colors flex justify-center items-center gap-1" ${isOut?'disabled':''}>
-                                🛒 <span>ထည့်မည်</span>
-                            </button>
+                            <button onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price}, ${p.stock})" class="mt-3 w-full ${isOut?'bg-gray-100 text-gray-400':'bg-blue-50 text-blue-700'} py-2.5 rounded-xl font-bold text-sm" ${isOut?'disabled':''}>🛒 ထည့်မည်</button>
                         </div>
                     </div>`
                 }).join('');
@@ -694,7 +653,6 @@ async def serve_frontend():
                 let existing = cart.find(i => i.id === id);
                 if(existing) { if(existing.qty < maxStock) existing.qty++; else return showToast("လက်ကျန် မလုံလောက်ပါ။"); } 
                 else cart.push({id, name, price, qty: 1, maxStock});
-                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); 
                 updateCartBadge(); showToast("ခြင်းထဲရောက်ပါပြီ"); 
             }
             
@@ -722,10 +680,10 @@ async def serve_frontend():
                             <div class="text-sm font-bold text-gray-800 line-clamp-1">${i.name}</div>
                             <div class="text-blue-600 font-bold mt-1 text-[15px]">${(i.price).toLocaleString()} Ks</div>
                         </div>
-                        <div class="flex items-center gap-3 bg-gray-50 rounded-xl p-1 border border-gray-200 shadow-inner">
-                            <button onclick="changeQty(${index}, -1)" class="w-8 h-8 flex items-center justify-center font-bold text-gray-600 bg-white shadow-sm rounded-lg active:bg-gray-100 transition">-</button>
+                        <div class="flex items-center gap-3 bg-gray-50 rounded-xl p-1 border border-gray-200">
+                            <button onclick="changeQty(${index}, -1)" class="w-8 h-8 font-bold text-gray-600 bg-white rounded-lg">-</button>
                             <span class="font-bold text-sm min-w-[20px] text-center">${i.qty}</span>
-                            <button onclick="changeQty(${index}, 1)" class="w-8 h-8 flex items-center justify-center font-bold text-gray-600 bg-white shadow-sm rounded-lg active:bg-gray-100 transition">+</button>
+                            <button onclick="changeQty(${index}, 1)" class="w-8 h-8 font-bold text-gray-600 bg-white rounded-lg">+</button>
                         </div>
                     </div>`;
                 }).join('');
@@ -740,35 +698,64 @@ async def serve_frontend():
                 updateCartBadge(); renderCart();
             }
 
+            // ================== CHECKOUT & IMAGE COMPRESSION ==================
+            function togglePaymentUI() {
+                const isQR = document.getElementById('pay-qr').checked;
+                const qrSec = document.getElementById('qr-payment-section');
+                if(isQR) qrSec.classList.remove('hidden'); else qrSec.classList.add('hidden');
+            }
+
+            function compressImageToBase64(file, callback) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const MAX_WIDTH = 800;
+                        let width = img.width, height = img.height;
+                        if (width > MAX_WIDTH) { height = Math.round(height * MAX_WIDTH / width); width = MAX_WIDTH; }
+                        canvas.width = width; canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        callback(canvas.toDataURL('image/jpeg', 0.6)); 
+                    }
+                    img.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            }
+
             async function checkoutCart() {
-                const state = document.getElementById('sel-state').value;
-                const district = document.getElementById('sel-district').value;
-                const tsp = document.getElementById('sel-township').value;
-                const tract = document.getElementById('sel-tract').value;
-                const village = document.getElementById('sel-village').value;
-                const street = document.getElementById('input-street').value.trim();
-                const phone = document.getElementById('input-phone').value.trim();
+                const addr = document.getElementById('checkout-address').value.trim();
+                const ph = document.getElementById('checkout-phone').value.trim();
+                const payMethod = document.querySelector('input[name="pay_method"]:checked').value;
                 const tx_id = document.getElementById('checkout-tx').value.trim();
+                const fileInput = document.getElementById('checkout-receipt');
+                
+                if(!addr || !ph) return showToast("လိပ်စာနှင့် ဖုန်းနံပါတ် ဖြည့်ပါ။");
+                if(payMethod === "QR" && !tx_id) return showToast("ငွေလွှဲပြေစာ အမှတ် (Tx ID) ထည့်ပါ။");
+                
+                let base64Receipt = "";
+                const finishCheckout = async (b64) => {
+                    tg.MainButton.showProgress();
+                    try {
+                        const payload = { payment_method: payMethod, transaction_id: tx_id, address: addr, phone: ph, receipt_b64: b64, cart: cart.map(i=>({id:i.id, qty:i.qty})) };
+                        const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payload) });
+                        if(res.ok) { 
+                            clearCart(); 
+                            document.getElementById('checkout-tx').value = '';
+                            if(fileInput) fileInput.value = '';
+                            showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
+                            showTab('history-tab', 'btn-history'); 
+                        } else { const err = await res.json(); showToast(err.detail || "Error Occurred"); }
+                    } catch(e) { showToast("ဆက်သွယ်မှု ပြတ်တောက်သွားပါသည်။"); }
+                    finally { tg.MainButton.hideProgress(); }
+                };
 
-                if(!state || !district || !tsp || !tract || !village || !phone) return showToast("လိပ်စာ အဆင့် ၅ ဆင့်နှင့် ဖုန်းနံပါတ်ကို ပြည့်စုံစွာ ရွေးချယ်ပေးပါ။");
-                if(!tx_id) return showToast("ငွေလွှဲပြေစာ အမှတ် (Tx ID) ထည့်ပါ။");
-
-                let compiledAddr = `${village}၊ ${tract}၊ ${tsp}၊ ${district}၊ ${state}။`;
-                if(street) compiledAddr = `${street}၊ ` + compiledAddr;
-                compiledAddr += ` (ဖုန်း: ${phone})`;
-
-                tg.MainButton.showProgress();
-                try {
-                    const payload = { transaction_id: tx_id, address: compiledAddr, phone: phone, cart: cart.map(i=>({id:i.id, qty:i.qty})) };
-                    const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payload) });
-                    if(res.ok) { 
-                        clearCart(); 
-                        document.getElementById('checkout-tx').value = '';
-                        showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
-                        showTab('history-tab', 'btn-history'); 
-                    } else { const err = await res.json(); showToast(err.detail || "Error Occurred"); }
-                } catch(e) { showToast("ဆက်သွယ်မှု ပြတ်တောက်သွားပါသည်။"); }
-                finally { tg.MainButton.hideProgress(); }
+                if (payMethod === "QR" && fileInput.files && fileInput.files[0]) {
+                    compressImageToBase64(fileInput.files[0], finishCheckout);
+                } else {
+                    finishCheckout("");
+                }
             }
 
             function clearCart() { cart = []; updateCartBadge(); renderCart(); }
@@ -780,7 +767,7 @@ async def serve_frontend():
                 document.getElementById('buyer-order-list').innerHTML = '<div class="text-center text-gray-400 py-10">Loading...</div>';
                 const res = await apiFetch('/api/buyer/orders');
                 const orders = await res.json();
-                if(orders.length === 0) return document.getElementById('buyer-order-list').innerHTML = `<div class="empty-state bg-white rounded-2xl shadow-sm border border-gray-100"><div class="empty-icon">🧾</div><p>အော်ဒါမှတ်တမ်း မရှိသေးပါ။</p></div>`;
+                if(orders.length === 0) return document.getElementById('buyer-order-list').innerHTML = `<div class="text-center text-gray-400 py-10">အော်ဒါမှတ်တမ်း မရှိသေးပါ။</div>`;
                 
                 document.getElementById('buyer-order-list').innerHTML = orders.map(o => `
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden">
@@ -790,7 +777,7 @@ async def serve_frontend():
                             <span class="text-[11px] font-bold px-2.5 py-1 rounded-md status-${o.status} whitespace-nowrap">${statusNames[o.status]}</span>
                         </div>
                         <div class="flex justify-between items-center text-xs pl-2">
-                            <span class="text-gray-500">${o.date}</span>
+                            <span class="text-gray-500">${o.pay === 'COD' ? '🚚 အိမ်ရောက်ငွေချေ' : '💳 Mobile Pay'}</span>
                             <span class="font-black text-gray-800 text-[15px]">${(o.price * o.qty).toLocaleString()} Ks</span>
                         </div>
                         ${o.status === 'pending' ? `<button onclick="cancelOrder(${o.id})" class="mt-3 w-full bg-red-50 text-red-600 hover:bg-red-100 py-2 rounded-lg text-xs font-bold transition-colors">အော်ဒါ ပြန်လည်ပယ်ဖျက်မည်</button>` : ''}
@@ -801,14 +788,12 @@ async def serve_frontend():
                 if(!confirm("ဤအော်ဒါကို ဖျက်သိမ်းမှာ သေချာပါသလား?")) return;
                 const res = await apiFetch(`/api/buyer/orders/${orderId}/cancel`, {method: 'POST'});
                 if(res.ok) { showToast("အော်ဒါ ဖျက်သိမ်းပြီးပါပြီ။"); loadBuyerOrders(); }
-                else { showToast("ဖျက်သိမ်း၍ မရနိုင်ပါ။"); }
             }
             
             // ================== VENDOR MANAGEMENT ==================
             function switchVendorTab(tab) {
                 document.getElementById('v-tab-dash').className = tab === 'dash' ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800 transition-all' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500 transition-all';
                 document.getElementById('v-tab-prods').className = tab === 'prods' ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800 transition-all' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500 transition-all';
-                
                 document.getElementById('vendor-dash-view').style.display = tab === 'dash' ? 'block' : 'none';
                 document.getElementById('vendor-prods-view').style.display = tab === 'prods' ? 'block' : 'none';
                 if(tab === 'dash') loadVendorOrders(); else loadVendorProducts();
@@ -818,24 +803,25 @@ async def serve_frontend():
                 document.getElementById('order-list').innerHTML = '<div class="text-center text-gray-400 py-10">Loading...</div>';
                 const res = await apiFetch('/api/vendor/orders');
                 const orders = await res.json();
-                if(orders.length === 0) return document.getElementById('order-list').innerHTML = `<div class="empty-state bg-white rounded-2xl border"><div class="empty-icon">📫</div><p>ဝင်ထားသော အော်ဒါမရှိသေးပါ။</p></div>`;
+                if(orders.length === 0) return document.getElementById('order-list').innerHTML = `<div class="text-center text-gray-400 py-10">ဝင်ထားသော အော်ဒါမရှိပါ။</div>`;
 
                 document.getElementById('order-list').innerHTML = orders.map(o => `
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 mb-3 relative overflow-hidden">
                         <div class="absolute left-0 top-0 bottom-0 w-1 status-${o.status}"></div>
                         <div class="flex justify-between mb-3 pl-2">
                             <div class="text-sm font-bold text-gray-800 pr-2">${o.name} <span class="text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded text-xs ml-1">x${o.qty}</span></div>
-                            <div class="text-[10px] uppercase font-bold status-${o.status} px-2 py-1 rounded whitespace-nowrap">${o.status}</div>
+                            <div class="text-[10px] uppercase font-bold status-${o.status} px-2 py-1 rounded whitespace-nowrap">${statusNames[o.status].split(' ')[0]}</div>
                         </div>
                         <div class="bg-gray-50 p-3 rounded-xl text-[13px] text-gray-700 mb-3 border border-gray-200 ml-2">
                             <div class="mb-1"><span class="font-bold text-gray-500">ဝယ်သူ:</span> <span class="font-medium">${o.buyer}</span></div>
                             <div class="mb-1"><span class="font-bold text-gray-500">လိပ်စာ:</span> <span class="font-medium">${o.addr}</span></div>
-                            <div><span class="font-bold text-gray-500">Tx ID:</span> <span class="text-blue-600 font-mono font-bold bg-blue-50 px-1 rounded">${o.tx}</span></div>
+                            <div class="mb-1"><span class="font-bold text-gray-500">စနစ်:</span> <span class="font-bold ${o.pay==='COD'?'text-orange-600':'text-blue-600'}">${o.pay}</span></div>
+                            ${o.tx ? `<div><span class="font-bold text-gray-500">Tx ID:</span> <span class="text-blue-600 font-mono font-bold bg-blue-50 px-1 rounded">${o.tx}</span></div>` : ''}
                         </div>
                         <div class="flex gap-2 pl-2">
                             <select onchange="updateOrderStatus(${o.id}, this.value)" class="flex-1 bg-gray-50 border border-gray-200 text-[13px] font-bold p-2.5 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
                                 <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
-                                <option value="approved" ${o.status==='approved'?'selected':''}>📦 ငွေမှန်ကန် (ထုပ်ပိုးမည်)</option>
+                                <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြု (ထုပ်ပိုးမည်)</option>
                                 <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
                                 <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
                                 <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
@@ -850,51 +836,16 @@ async def serve_frontend():
             }
 
             async function loadVendorProducts() {
-                document.getElementById('vendor-product-list').innerHTML = '<div class="text-center text-gray-400 py-10">Loading...</div>';
                 const res = await apiFetch('/api/vendor/products');
                 const prods = await res.json();
-                if(prods.length === 0) return document.getElementById('vendor-product-list').innerHTML = `<div class="empty-state bg-white rounded-2xl border"><div class="empty-icon">📦</div><p>တင်ထားသော ပစ္စည်းမရှိပါ။</p></div>`;
-
                 document.getElementById('vendor-product-list').innerHTML = prods.map(p => `
-                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 mb-3">
-                        <div class="flex justify-between items-start">
-                            <div>
-                                <div class="text-[14px] font-bold text-gray-800 leading-tight mb-1">${p.name}</div>
-                                <div class="text-blue-600 font-bold text-[13px]">${p.price.toLocaleString()} Ks</div>
-                            </div>
-                            <div class="flex flex-col gap-1.5 ml-2">
-                                <button onclick="editProduct(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price})" class="text-blue-600 text-xs font-bold bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors">ပြင်မည်</button>
-                                <button onclick="if(confirm('ဖျက်မှာသေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="text-red-500 text-xs font-bold bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-lg transition-colors">ဖျက်မည်</button>
-                            </div>
+                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-center mb-3">
+                        <div>
+                            <div class="text-[14px] font-bold text-gray-800 leading-tight mb-1">${p.name}</div>
+                            <div class="text-blue-600 font-bold text-[13px]">${p.price.toLocaleString()} Ks (လက်ကျန်: ${p.stock})</div>
                         </div>
-                        <div class="flex justify-between items-center bg-gray-50 p-2.5 rounded-xl border border-gray-200">
-                            <span class="text-xs font-bold text-gray-600">လက်ကျန် (Stock):</span>
-                            <div class="flex items-center gap-3">
-                                <button onclick="updateStock(${p.id}, ${p.stock - 1})" class="w-8 h-8 bg-white border border-gray-200 rounded-lg flex items-center justify-center font-bold text-gray-600 shadow-sm active:bg-gray-100 transition">-</button>
-                                <span class="font-bold text-[15px] min-w-[24px] text-center">${p.stock}</span>
-                                <button onclick="updateStock(${p.id}, ${p.stock + 1})" class="w-8 h-8 bg-white border border-gray-200 rounded-lg flex items-center justify-center font-bold text-gray-600 shadow-sm active:bg-gray-100 transition">+</button>
-                            </div>
-                        </div>
+                        <button onclick="if(confirm('ဖျက်မှာသေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="text-red-500 text-xs font-bold bg-red-50 px-3 py-1.5 rounded-lg">ဖျက်မည်</button>
                     </div>`).join('');
-            }
-
-            async function editProduct(productId, oldName, oldPrice) {
-                const newName = prompt("ပစ္စည်းအမည် အသစ်ရိုက်ထည့်ပါ:", oldName);
-                if(newName === null) return;
-                const newPriceStr = prompt("ဈေးနှုန်းအသစ် ရိုက်ထည့်ပါ (ဂဏန်းသီးသန့်):", oldPrice);
-                if(newPriceStr === null) return;
-                const newPrice = parseFloat(newPriceStr);
-                
-                if(newName.trim() === '' || isNaN(newPrice)) return showToast("အချက်အလက် မှားယွင်းနေပါသည်။");
-                
-                const res = await apiFetch(`/api/vendor/products/${productId}/edit`, { method: 'PUT', body: JSON.stringify({name: newName, price: newPrice}) });
-                if(res.ok) { showToast("ပြင်ဆင်ပြီးပါပြီ"); loadVendorProducts(); }
-            }
-
-            async function updateStock(productId, newStock) {
-                if(newStock < 0) return;
-                await apiFetch(`/api/vendor/products/${productId}/stock`, { method: 'PUT', body: JSON.stringify({stock: newStock}) });
-                loadVendorProducts();
             }
 
             window.onload = initApp;
