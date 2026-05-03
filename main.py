@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (With Edit Features)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (UI Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -154,7 +154,6 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }
     }
 
-# ✅ ပြည့်စုံသော မြန်မာနိုင်ငံ လိပ်စာဒေတာ (State -> District -> Township)
 @app.get("/api/locations")
 def get_locations():
     return {
@@ -388,10 +387,8 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
-    # ထပ်မံထည့်သွင်းထားသော image_file_id
     return [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock, "img":p.image_file_id} for p in products]
 
-# ✅ ထပ်မံဖြည့်စွက်ထားသော Product Edit API
 @app.put("/api/vendor/products/{product_id}")
 async def edit_product(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = await request.json()
@@ -467,7 +464,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI 
+# ၆။ FRONTEND UI (UI/UX Enhanced)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -479,160 +476,198 @@ async def serve_frontend():
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+Myanmar:wght@400;600;800&display=swap" rel="stylesheet">
         <title>Digital Mall Master</title>
         <style>
-            body { font-family: sans-serif; -webkit-tap-highlight-color: transparent; background-color: #f3f4f6; }
-            .tab-btn.active { color: #2563eb; border-bottom: 3px solid #2563eb; }
-            .cat-chip.active { background-color: #2563eb; color: white; border-color: #2563eb; }
-            .badge { position: absolute; top: -2px; right: -2px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold; }
+            body { 
+                font-family: 'Inter', 'Noto Sans Myanmar', sans-serif; 
+                -webkit-tap-highlight-color: transparent; 
+                background-color: #f8fafc; /* Softer, lighter slate background */
+            }
             
-            .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
-            .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
-            .slide-up-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
-            .slide-up-modal.active { display: flex; animation: fadeIn 0.2s; }
-            .slide-up-content { background: white; border-radius: 20px 20px 0 0; padding: 20px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s ease-out; }
+            /* Animations & Gradients */
+            @keyframes fadeUp { 0% { opacity: 0; transform: translateY(15px); } 100% { opacity: 1; transform: translateY(0); } }
+            .animate-fade-up { animation: fadeUp 0.4s ease-out forwards; }
+            
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+            .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+            
+            @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+            .animate-float { animation: float 3s ease-in-out infinite; }
+            
+            @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+            .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
+
+            .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+            .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
+            
+            /* Glassmorphism components */
+            .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
+            .glass-bottom-nav { background: rgba(255, 255, 255, 0.90); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-top: 1px solid rgba(226, 232, 240, 0.8); }
+            
+            /* Interactive elements */
+            .btn-press:active { transform: scale(0.95); transition: transform 0.1s ease; }
+            .tab-btn { color: #64748b; transition: all 0.2s ease; }
+            .tab-btn.active { color: #4f46e5; }
+            .cat-chip { transition: all 0.2s ease; border: 1px solid #e2e8f0; }
+            .cat-chip.active { background: linear-gradient(135deg, #2563eb, #8b5cf6); color: white; border-color: transparent; box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2); }
+            
+            .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
+            
+            /* Modals */
+            .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
+            .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
+            .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
+            .slide-up-modal.active { display: flex; animation: fadeIn 0.2s; }
+            .slide-up-content { background: white; border-radius: 24px 24px 0 0; padding: 24px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             
-            #toast { visibility: hidden; min-width: 250px; background-color: rgba(31, 41, 55, 0.95); color: #fff; text-align: center; border-radius: 12px; padding: 14px; position: fixed; z-index: 100; left: 50%; bottom: 80px; transform: translateX(-50%); font-size: 14px; backdrop-filter: blur(4px); }
+            #toast { visibility: hidden; min-width: 250px; background: rgba(15, 23, 42, 0.95); color: #fff; text-align: center; border-radius: 16px; padding: 14px 20px; position: fixed; z-index: 100; left: 50%; bottom: 85px; transform: translateX(-50%); font-size: 13px; font-weight: 600; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
             #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 3.5s; }
             
-            /* Tracker Visuals */
-            .tracker-container { display: flex; justify-content: space-between; align-items: center; position: relative; margin: 15px 10px 5px 10px; }
-            .tracker-line { position: absolute; top: 12px; left: 0; right: 0; height: 3px; background-color: #e5e7eb; z-index: 1; }
-            .tracker-progress { position: absolute; top: 12px; left: 0; height: 3px; background-color: #2563eb; z-index: 2; transition: width 0.4s ease; }
-            .track-step { position: relative; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-            .track-dot { width: 26px; height: 26px; border-radius: 50%; background-color: white; border: 3px solid #e5e7eb; display: flex; align-items: center; justify-content: center; font-size: 12px; color: white; transition: all 0.3s; }
-            .track-step.active .track-dot { border-color: #2563eb; background-color: #2563eb; }
-            .track-label { font-size: 10px; font-weight: bold; color: #6b7280; }
-            .track-step.active .track-label { color: #2563eb; }
-            .status-cancelled { background-color: #fee2e2; color: #dc2626; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }
+            /* Tracker */
+            .tracker-container { display: flex; justify-content: space-between; align-items: center; position: relative; margin: 15px 10px 10px 10px; }
+            .tracker-line { position: absolute; top: 12px; left: 0; right: 0; height: 4px; background-color: #f1f5f9; border-radius: 2px; z-index: 1; }
+            .tracker-progress { position: absolute; top: 12px; left: 0; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #3b82f6, #8b5cf6); z-index: 2; transition: width 0.5s ease-in-out; }
+            .track-step { position: relative; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+            .track-dot { width: 28px; height: 28px; border-radius: 50%; background-color: white; border: 3px solid #e2e8f0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: white; transition: all 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+            .track-step.active .track-dot { border-color: transparent; background: linear-gradient(135deg, #3b82f6, #8b5cf6); box-shadow: 0 4px 6px rgba(139, 92, 246, 0.3); }
+            .track-label { font-size: 10px; font-weight: 800; color: #94a3b8; }
+            .track-step.active .track-label { color: #4f46e5; }
+            .status-cancelled { background-color: #fef2f2; color: #ef4444; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 800; border: 1px solid #fee2e2; }
         </style>
     </head>
-    <body class="pb-20">
+    <body class="pb-24">
         
-        <header class="bg-white p-4 shadow-sm sticky top-0 z-40 flex justify-between items-center">
-            <span class="font-bold text-blue-700 text-xl tracking-tight">Digital<span class="text-gray-800">Mall</span></span>
+        <header class="glass-header p-4 sticky top-0 z-40 flex justify-between items-center">
+            <span class="font-extrabold text-xl tracking-tight gradient-text">Digital<span class="text-slate-800">Mall</span></span>
             <div class="flex items-center gap-3">
-                <button onclick="openNotiModal()" class="relative p-2 rounded-full bg-gray-100 text-gray-600 transition">
+                <button onclick="openNotiModal()" class="btn-press relative p-2.5 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
                     <span id="noti-count" class="badge hidden">0</span>
                 </button>
-                <button onclick="showTab('cart-tab', 'btn-shop')" class="relative p-2.5 rounded-full bg-blue-50 text-blue-600 transition">
+                <button onclick="showTab('cart-tab', 'btn-shop')" class="btn-press relative p-2.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                     <span id="cart-count" class="badge hidden">0</span>
                 </button>
             </div>
         </header>
 
-        <div class="fixed bottom-0 w-full bg-white border-t flex justify-around text-xs font-medium text-gray-500 z-50 shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
-            <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn active flex-1 py-3 flex flex-col items-center gap-1">
-                <span class="text-[20px]">🏠</span><span>ဝယ်မည်</span>
+        <div class="glass-bottom-nav fixed bottom-0 w-full flex justify-around text-[11px] font-bold z-50 shadow-[0_-8px_20px_rgba(0,0,0,0.04)] pb-safe">
+            <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn btn-press active flex-1 py-3 flex flex-col items-center gap-1.5">
+                <span class="text-[22px] leading-none">🏠</span><span>ဝယ်မည်</span>
             </button>
-            <button onclick="triggerSell()" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1 relative">
-                <div class="absolute -top-3 bg-blue-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg border-4 border-white text-2xl pb-1">+</div>
-                <span class="mt-6 font-bold text-blue-600">ရောင်းမည်</span>
+            <button onclick="triggerSell()" class="tab-btn btn-press flex-1 py-3 flex flex-col items-center gap-1 relative">
+                <div class="absolute -top-5 gradient-bg text-white w-14 h-14 rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(99,102,241,0.3)] border-4 border-[#f8fafc] text-3xl pb-1 animate-float z-10">+</div>
+                <span class="mt-7 font-extrabold gradient-text">ရောင်းမည်</span>
             </button>
-            <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn flex-1 py-3 flex flex-col items-center gap-1">
-                <span class="text-[20px]">📋</span><span>မှတ်တမ်း</span>
+            <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn btn-press flex-1 py-3 flex flex-col items-center gap-1.5">
+                <span class="text-[22px] leading-none">📋</span><span>မှတ်တမ်း</span>
             </button>
-            <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn hidden flex-1 py-3 flex flex-col items-center gap-1">
-                <span class="text-[20px]">⚙️</span><span>စီမံရန်</span>
+            <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn btn-press hidden flex-1 py-3 flex flex-col items-center gap-1.5">
+                <span class="text-[22px] leading-none">⚙️</span><span>စီမံရန်</span>
             </button>
         </div>
 
         <div id="noti-modal" class="slide-up-modal" onclick="closeNotiModal(event)">
             <div class="slide-up-content" onclick="event.stopPropagation()">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="font-bold text-xl text-gray-800">🔔 အသိပေးချက်များ</h2>
-                    <button onclick="document.getElementById('noti-modal').classList.remove('active')" class="text-gray-400 font-bold text-2xl">&times;</button>
+                <div class="flex justify-between items-center mb-5">
+                    <h2 class="font-extrabold text-xl text-slate-800">🔔 အသိပေးချက်များ</h2>
+                    <button onclick="document.getElementById('noti-modal').classList.remove('active')" class="btn-press text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
                 </div>
                 <div id="noti-list" class="space-y-3 pb-5 min-h-[200px]"></div>
             </div>
         </div>
 
         <div id="edit-product-modal" class="modal-overlay">
-            <div class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl relative">
-                <button onclick="closeEditModal()" class="absolute top-3 right-4 text-gray-400 font-bold text-xl">&times;</button>
-                <h2 class="font-bold text-lg mb-4 text-gray-800">ပစ္စည်း အချက်အလက် ပြင်မည်</h2>
+            <div class="bg-white w-full max-w-sm rounded-[24px] p-6 shadow-2xl relative animate-fade-up">
+                <button onclick="closeEditModal()" class="absolute top-4 right-4 text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl btn-press">&times;</button>
+                <h2 class="font-extrabold text-lg mb-5 text-slate-800">ပစ္စည်း အချက်အလက် ပြင်မည်</h2>
                 <input type="hidden" id="edit-prod-id">
-                <div class="space-y-3">
+                <div class="space-y-4">
                     <div>
-                        <label class="block text-xs font-bold text-gray-600 mb-1">ပစ္စည်း အမည်</label>
-                        <input type="text" id="edit-prod-name" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                        <label class="block text-xs font-bold text-slate-500 mb-1.5">ပစ္စည်း အမည်</label>
+                        <input type="text" id="edit-prod-name" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-gray-600 mb-1">ဈေးနှုန်း (Ks)</label>
-                        <input type="number" id="edit-prod-price" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                        <label class="block text-xs font-bold text-slate-500 mb-1.5">ဈေးနှုန်း (Ks)</label>
+                        <input type="number" id="edit-prod-price" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-gray-600 mb-1">လက်ကျန် (Stock)</label>
-                        <input type="number" id="edit-prod-stock" class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm outline-none focus:ring-1 focus:ring-blue-500">
+                        <label class="block text-xs font-bold text-slate-500 mb-1.5">လက်ကျန် (Stock)</label>
+                        <input type="number" id="edit-prod-stock" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                     </div>
                 </div>
-                <button onclick="saveEditProduct()" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md mt-5">သိမ်းဆည်းမည်</button>
+                <button onclick="saveEditProduct()" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-6 text-sm">သိမ်းဆည်းမည်</button>
             </div>
         </div>
 
-        <div id="shop-tab" class="tab-content">
-            <div class="p-4 bg-white shadow-sm mb-2 rounded-b-2xl">
-                <input type="text" id="search-box" oninput="autoSearch()" placeholder="🔍 ရှာဖွေလိုသော ပစ္စည်းအမည်..." class="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none mb-4">
-                <div id="category-container" class="flex gap-2 overflow-x-auto pb-1 scrollbar-hide"></div>
+        <div id="shop-tab" class="tab-content animate-fade-in">
+            <div class="p-4 bg-white shadow-sm border-b border-slate-100 mb-3 rounded-b-3xl">
+                <div class="relative mb-4">
+                    <span class="absolute left-4 top-3 text-slate-400">🔍</span>
+                    <input type="text" id="search-box" oninput="autoSearch()" placeholder="ရှာဖွေလိုသော ပစ္စည်းအမည်..." class="w-full py-3 pl-10 pr-4 bg-slate-50 rounded-2xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium">
+                </div>
+                <div id="category-container" class="flex gap-2.5 overflow-x-auto pb-2 scrollbar-hide pt-1"></div>
             </div>
             <div id="product-list" class="p-4 grid grid-cols-2 gap-4"></div>
         </div>
 
-        <div id="cart-tab" class="tab-content hidden p-4">
-            <h2 class="font-bold text-gray-800 text-xl mb-4">🛒 သင်၏ခြင်းတောင်း</h2>
-            <div id="cart-empty-state" class="hidden bg-white p-10 rounded-2xl shadow-sm border text-center text-gray-400"><div class="text-4xl mb-2">🛍️</div><p>ပစ္စည်းမရှိပါ</p></div>
-            <div id="cart-content-wrapper"></div>
+        <div id="cart-tab" class="tab-content hidden p-4 animate-fade-in">
+            <h2 class="font-extrabold text-slate-800 text-2xl mb-5 flex items-center gap-2">🛒 သင်၏ခြင်းတောင်း</h2>
+            <div id="cart-empty-state" class="hidden animate-fade-up bg-white p-12 rounded-3xl shadow-sm border border-slate-100 text-center text-slate-400 mt-10">
+                <div class="text-6xl mb-4 animate-float">🛍️</div>
+                <p class="font-bold text-slate-500">ပစ္စည်းမရှိသေးပါ</p>
+            </div>
+            <div id="cart-content-wrapper" class="pb-10"></div>
         </div>
 
-        <div id="history-tab" class="tab-content hidden p-4">
-            <h2 class="font-bold text-gray-800 text-xl mb-4">အော်ဒါမှတ်တမ်းများ</h2>
-            <div id="buyer-order-list" class="space-y-4"></div>
+        <div id="history-tab" class="tab-content hidden p-4 animate-fade-in">
+            <h2 class="font-extrabold text-slate-800 text-2xl mb-5">📋 အော်ဒါမှတ်တမ်းများ</h2>
+            <div id="buyer-order-list" class="space-y-4 pb-10"></div>
         </div>
         
-        <div id="orders-tab" class="tab-content hidden p-4">
-            <div class="flex bg-gray-200 p-1 rounded-xl mb-4">
-                <button onclick="switchVendorTab('dash')" id="v-tab-dash" class="flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800">အော်ဒါများ</button>
-                <button onclick="switchVendorTab('prods')" id="v-tab-prods" class="flex-1 py-2 rounded-lg text-sm font-bold text-gray-500">ပစ္စည်းများ</button>
-                <button onclick="switchVendorTab('profile')" id="v-tab-profile" class="flex-1 py-2 rounded-lg text-sm font-bold text-gray-500">Profile</button>
+        <div id="orders-tab" class="tab-content hidden p-4 animate-fade-in">
+            <div class="flex bg-slate-100 p-1.5 rounded-2xl mb-5 shadow-inner">
+                <button onclick="switchVendorTab('dash')" id="v-tab-dash" class="btn-press flex-1 bg-white shadow-sm py-2.5 rounded-xl text-sm font-extrabold text-indigo-600 transition-all">အော်ဒါများ</button>
+                <button onclick="switchVendorTab('prods')" id="v-tab-prods" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all">ပစ္စည်းများ</button>
+                <button onclick="switchVendorTab('profile')" id="v-tab-profile" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all">Profile</button>
             </div>
-            <div id="vendor-dash-view"><div id="order-list" class="space-y-3"></div></div>
-            <div id="vendor-prods-view" class="hidden"><div id="vendor-product-list" class="space-y-3"></div></div>
-            <div id="vendor-profile-view" class="hidden">
-                <div class="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-                    <h3 class="font-bold text-gray-800 mb-4">🏪 ရောင်းသူ Profile သတ်မှတ်ရန်</h3>
-                    <label class="flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-100 mb-4 cursor-pointer">
-                        <input type="checkbox" id="prof-cod" class="w-5 h-5 text-blue-600 rounded">
-                        <span class="font-bold text-sm text-blue-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD)</span>
+            <div id="vendor-dash-view" class="animate-fade-up"><div id="order-list" class="space-y-4 pb-10"></div></div>
+            <div id="vendor-prods-view" class="hidden animate-fade-up"><div id="vendor-product-list" class="space-y-3 pb-10"></div></div>
+            <div id="vendor-profile-view" class="hidden animate-fade-up">
+                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-10">
+                    <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏪 ရောင်းသူ Profile </h3>
+                    <label class="flex items-center gap-3 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 mb-5 cursor-pointer transition hover:bg-indigo-50">
+                        <input type="checkbox" id="prof-cod" class="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500">
+                        <span class="font-bold text-sm text-indigo-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD)</span>
                     </label>
-                    <div class="space-y-4">
-                        <div class="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                            <label class="block text-xs font-bold text-blue-800 mb-1">KPay ဖုန်း / QR</label>
-                            <input type="text" id="prof-kpay-ph" placeholder="09xxxxxxxxx" class="w-full p-2.5 bg-white rounded border mb-2 text-sm outline-none">
-                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-kpay-qr')" class="text-xs mb-2">
-                            <input type="hidden" id="prof-kpay-qr"><img id="prof-kpay-preview" class="h-20 rounded hidden border shadow-sm mt-2">
+                    <div class="space-y-5">
+                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <label class="block text-xs font-extrabold text-indigo-700 mb-2">KPay ဖုန်း / QR</label>
+                            <input type="text" id="prof-kpay-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-kpay-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition">
+                            <input type="hidden" id="prof-kpay-qr"><img id="prof-kpay-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
                         </div>
-                        <div class="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                            <label class="block text-xs font-bold text-yellow-600 mb-1">WavePay ဖုန်း / QR</label>
-                            <input type="text" id="prof-wave-ph" placeholder="09xxxxxxxxx" class="w-full p-2.5 bg-white rounded border mb-2 text-sm outline-none">
-                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-wave-qr')" class="text-xs mb-2">
-                            <input type="hidden" id="prof-wave-qr"><img id="prof-wave-preview" class="h-20 rounded hidden border shadow-sm mt-2">
+                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <label class="block text-xs font-extrabold text-amber-600 mb-2">WavePay ဖုန်း / QR</label>
+                            <input type="text" id="prof-wave-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-amber-500 transition">
+                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-wave-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100 transition">
+                            <input type="hidden" id="prof-wave-qr"><img id="prof-wave-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
                         </div>
                     </div>
-                    <button onclick="saveVendorProfile()" class="w-full mt-5 bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md">သိမ်းဆည်းမည်</button>
+                    <button onclick="saveVendorProfile()" class="btn-press w-full mt-6 gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] text-sm">သိမ်းဆည်းမည်</button>
                 </div>
             </div>
         </div>
 
         <div id="setup-modal" class="modal-overlay">
-            <div class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl relative">
-                <button onclick="document.getElementById('setup-modal').classList.remove('active')" class="absolute top-3 right-4 text-gray-400 font-bold text-xl">&times;</button>
-                <h2 class="font-bold text-xl mb-2">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
-                <p class="text-sm text-gray-600 mb-4">ပစ္စည်းမတင်မီ သင်လက်ခံမည့် ငွေချေစနစ်များကို အရင်သတ်မှတ်ပါ။</p>
-                <button onclick="document.getElementById('setup-modal').classList.remove('active'); showTab('orders-tab', 'btn-orders'); switchVendorTab('profile');" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl">Setting သို့သွားရန်</button>
+            <div class="bg-white w-full max-w-sm rounded-[24px] p-6 shadow-2xl relative animate-fade-up">
+                <button onclick="document.getElementById('setup-modal').classList.remove('active')" class="btn-press absolute top-4 right-4 text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
+                <div class="text-4xl mb-3">🏪</div>
+                <h2 class="font-extrabold text-xl mb-2 text-slate-800">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
+                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်လက်ခံမည့် ငွေချေစနစ် (KPay, Wave, COD) များကို အရင်သတ်မှတ်ပေးပါ။</p>
+                <button onclick="document.getElementById('setup-modal').classList.remove('active'); showTab('orders-tab', 'btn-orders'); switchVendorTab('profile');" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-md text-sm">Setting သို့သွားရန်</button>
             </div>
         </div>
 
@@ -647,9 +682,9 @@ async def serve_frontend():
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
-                t.innerText = msg; t.className = "show";
+                t.innerText = msg; t.className = "show animate-bounce-short";
                 if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
-                setTimeout(() => { t.className = t.className.replace("show", ""); }, 3200);
+                setTimeout(() => { t.className = t.className.replace("show animate-bounce-short", ""); }, 3200);
             }
 
             async function apiFetch(url, options = {}) {
@@ -680,10 +715,10 @@ async def serve_frontend():
                     const res = await apiFetch('/api/notifications'); const notis = await res.json();
                     const badge = document.getElementById('noti-count');
                     const unread = notis.filter(n => !n.is_read).length;
-                    if(unread > 0) { badge.innerText = unread; badge.classList.remove('hidden'); } else { badge.classList.add('hidden'); }
+                    if(unread > 0) { badge.innerText = unread; badge.classList.remove('hidden'); badge.classList.add('animate-bounce-short'); } else { badge.classList.add('hidden'); }
                     const list = document.getElementById('noti-list');
-                    if(notis.length === 0) return list.innerHTML = `<div class="text-center text-gray-400 py-10">အသိပေးချက် မရှိသေးပါ</div>`;
-                    list.innerHTML = notis.map(n => `<div class="p-3 rounded-xl border ${n.is_read ? 'bg-gray-50 border-gray-100 text-gray-500' : 'bg-blue-50 border-blue-200 text-blue-900'}"><div class="font-bold text-sm mb-1">${n.message}</div><div class="text-[10px] ${n.is_read ? 'text-gray-400' : 'text-blue-500'}">${n.date}</div></div>`).join('');
+                    if(notis.length === 0) return list.innerHTML = `<div class="text-center text-slate-400 py-10 font-medium">အသိပေးချက် မရှိသေးပါ</div>`;
+                    list.innerHTML = notis.map(n => `<div class="p-4 rounded-2xl border transition-all ${n.is_read ? 'bg-slate-50 border-slate-100 text-slate-500' : 'bg-indigo-50 border-indigo-100 text-indigo-900 shadow-sm'}"><div class="font-bold text-[13px] mb-1.5">${n.message}</div><div class="text-[10px] font-bold ${n.is_read ? 'text-slate-400' : 'text-indigo-500'}">${n.date}</div></div>`).join('');
                 } catch(e) {}
             }
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
@@ -698,9 +733,15 @@ async def serve_frontend():
             }
             function showTab(tabId, btnId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+                document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); });
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                document.getElementById(tabId).classList.remove('hidden');
+                
+                const tab = document.getElementById(tabId);
+                tab.classList.remove('hidden');
+                // trigger reflow to restart animation
+                void tab.offsetWidth; 
+                tab.classList.add('animate-fade-in');
+                
                 if(btnId) document.getElementById(btnId).classList.add('active');
                 if(tabId === 'history-tab') loadBuyerOrders(); if(tabId === 'orders-tab') switchVendorTab('dash'); if(tabId === 'cart-tab') renderGroupedCart();
                 window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -724,20 +765,59 @@ async def serve_frontend():
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`); const data = await res.json(); allProducts = data.products;
                 if(query === "") {
-                    let catsHTML = `<button onclick="filterCategory('All')" class="cat-chip ${currentCategory==='All'?'active':''} px-4 py-2 rounded-full border text-sm bg-white whitespace-nowrap">အားလုံး</button>`;
-                    data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="cat-chip ${currentCategory===c?'active':''} px-4 py-2 rounded-full border text-sm bg-white whitespace-nowrap">${c}</button>`);
+                    let catsHTML = `<button onclick="filterCategory('All')" class="btn-press cat-chip ${currentCategory==='All'?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">အားလုံး</button>`;
+                    data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="btn-press cat-chip ${currentCategory===c?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">${c}</button>`);
                     document.getElementById('category-container').innerHTML = catsHTML;
                 }
-                if(allProducts.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center py-10 text-gray-400">ပစ္စည်းမရှိပါ</div>`;
-                document.getElementById('product-list').innerHTML = allProducts.map(p => {
+                if(allProducts.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center py-12 text-slate-400 font-medium animate-fade-up">ပစ္စည်းရှာမတွေ့ပါ 🔍</div>`;
+                
+                document.getElementById('product-list').innerHTML = allProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; const isOut = p.stock <= 0;
-                    return `<div class="bg-white rounded-2xl shadow-sm border overflow-hidden flex flex-col relative ${isOut ? 'opacity-60' : ''}">${isOut ? '<div class="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded z-10">ကုန်နေပါသည်</div>' : ''}<img src="${imgSrc}" class="w-full h-36 object-cover border-b"><div class="p-3 flex-grow flex flex-col justify-between"><div><div class="text-xs text-gray-400 mb-0.5">🏪 ${p.vendor_name}</div><div class="text-[13px] font-bold text-gray-800 line-clamp-2">${p.name}</div><div class="text-blue-600 text-[15px] font-black mt-1">${p.price.toLocaleString()} Ks</div></div><button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="mt-3 w-full ${isOut?'bg-gray-100 text-gray-400':'bg-blue-50 text-blue-700'} py-2 rounded-xl font-bold text-sm" ${isOut?'disabled':''}>🛒 ထည့်မည်</button></div></div>`
+                    const animDelay = (index % 10) * 0.05; // stagger animation
+                    return `<div class="animate-fade-up bg-white rounded-3xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-lg ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
+                        ${isOut ? '<div class="absolute top-3 right-3 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2.5 py-1 rounded-lg z-10 shadow-sm">ကုန်နေပါသည်</div>' : ''}
+                        <img src="${imgSrc}" class="w-full h-36 object-cover bg-slate-100">
+                        <div class="p-3.5 flex-grow flex flex-col justify-between">
+                            <div>
+                                <div class="text-[10px] font-bold text-slate-400 mb-1 flex items-center gap-1">🏪 ${p.vendor_name}</div>
+                                <div class="text-[13px] font-bold text-slate-800 line-clamp-2 leading-snug">${p.name}</div>
+                                <div class="text-indigo-600 text-[16px] font-black mt-1.5">${p.price.toLocaleString()} <span class="text-[10px]">Ks</span></div>
+                            </div>
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-3.5 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>
+                                🛒 ခြင်းထဲထည့်မည်
+                            </button>
+                        </div>
+                    </div>`
                 }).join('');
             }
             function filterCategory(cat) { currentCategory = cat; loadProducts(); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
-            function addToCart(prod) { let ex = cart.find(i => i.id === prod.id); if(ex) { if(ex.qty < prod.stock) ex.qty++; else return showToast("Stock မလုံလောက်ပါ။"); } else cart.push({...prod, qty: 1}); updateCartBadge(); showToast("ခြင်းထဲရောက်ပါပြီ"); }
-            function updateCartBadge() { const b = document.getElementById('cart-count'); let t = cart.reduce((s, i) => s + i.qty, 0); b.innerText = t; t > 0 ? b.classList.remove('hidden') : b.classList.add('hidden'); }
+            
+            function addToCart(prod) { 
+                let ex = cart.find(i => i.id === prod.id); 
+                if(ex) { 
+                    if(ex.qty < prod.stock) ex.qty++; 
+                    else return showToast("Stock မလုံလောက်ပါ။"); 
+                } else {
+                    cart.push({...prod, qty: 1}); 
+                }
+                updateCartBadge(); 
+                showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
+            }
+            function updateCartBadge() { 
+                const b = document.getElementById('cart-count'); 
+                let t = cart.reduce((s, i) => s + i.qty, 0); 
+                b.innerText = t; 
+                if(t > 0) {
+                    b.classList.remove('hidden');
+                    // Retrigger animation
+                    b.classList.remove('animate-bounce-short');
+                    void b.offsetWidth;
+                    b.classList.add('animate-bounce-short');
+                } else {
+                    b.classList.add('hidden');
+                }
+            }
 
             // CART & CHECKOUT
             function renderGroupedCart() {
@@ -751,16 +831,53 @@ async def serve_frontend():
                 let html = '';
                 for(let vid in vGroups) {
                     let g = vGroups[vid];
-                    let itemsHtml = g.items.map(i => `<div class="flex justify-between items-center mb-2 bg-gray-50 p-2 rounded border"><div class="flex-1"><div class="text-sm font-bold line-clamp-1">${i.name}</div><div class="text-blue-600 text-xs">${i.price.toLocaleString()} Ks</div></div><div class="flex items-center gap-2 bg-white rounded shadow-sm px-1 py-0.5 border"><button onclick="changeQty(${i.cart_idx}, -1)" class="w-6 h-6 text-gray-600 font-bold">-</button><span class="text-xs font-bold w-4 text-center">${i.qty}</span><button onclick="changeQty(${i.cart_idx}, 1)" class="w-6 h-6 text-gray-600 font-bold">+</button></div></div>`).join('');
-                    let payHtml = `<div class="mt-4 border-t pt-3"><select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-2 bg-white border rounded text-sm font-bold mb-3">`;
-                    if(g.vendor_cod) payHtml += `<option value="COD">🏠 အိမ်ရောက်မှ ငွေချေမည်</option>`;
+                    let itemsHtml = g.items.map(i => `
+                    <div class="flex justify-between items-center mb-3 bg-white p-3 rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.02)] border border-slate-100">
+                        <div class="flex-1 pr-3">
+                            <div class="text-[13px] font-bold text-slate-800 line-clamp-1">${i.name}</div>
+                            <div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div>
+                        </div>
+                        <div class="flex items-center gap-3 bg-slate-50 rounded-xl shadow-inner px-2 py-1 border border-slate-100">
+                            <button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button>
+                            <span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span>
+                            <button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button>
+                        </div>
+                    </div>`).join('');
+                    
+                    let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4">
+                        <label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label>
+                        <select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
+                    if(g.vendor_cod) payHtml += `<option value="COD">🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
                     if(g.kpay_phone || g.kpay_qr) payHtml += `<option value="KPay">📲 KPay ဖြင့် ငွေလွှဲမည်</option>`;
                     if(g.wave_phone || g.wave_qr) payHtml += `<option value="Wave">📲 WavePay ဖြင့် ငွေလွှဲမည်</option>`;
-                    payHtml += `</select><div id="qr_box_${vid}" class="bg-blue-50 p-3 rounded mb-3 border ${(!g.vendor_cod && (g.kpay_phone || g.wave_phone)) ? '' : 'hidden'}"><div class="flex justify-center mb-2"><img id="qr_img_${vid}" src="${g.kpay_qr || g.wave_qr || ''}" class="max-h-32 rounded shadow ${(!g.kpay_qr && !g.wave_qr) ? 'hidden' : ''}"></div><p id="qr_phone_${vid}" class="text-center font-mono font-bold text-lg text-gray-800">${g.kpay_phone || g.wave_phone || ''}</p><input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ၆ လုံး..." class="w-full mt-2 p-2 border rounded text-sm text-center outline-none"></div></div>`;
-                    html += `<div class="bg-white p-4 rounded-2xl shadow-sm border mb-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-blue-800">🏪 ${g.vendor_name}</h3><span class="text-sm font-black text-blue-600">${g.total.toLocaleString()} Ks</span></div>${itemsHtml}${payHtml}<button onclick="checkoutVendor(${vid})" class="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-md mt-2">အော်ဒါတင်မည်</button></div>`;
+                    payHtml += `</select>
+                    <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 ${(!g.vendor_cod && (g.kpay_phone || g.wave_phone)) ? '' : 'hidden'} animate-fade-in">
+                        <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="${g.kpay_qr || g.wave_qr || ''}" class="max-h-36 rounded-xl shadow-md border border-white ${(!g.kpay_qr && !g.wave_qr) ? 'hidden' : ''}"></div>
+                        <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">${g.kpay_phone || g.wave_phone || ''}</p>
+                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
+                    </div></div>`;
+                    
+                    html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5">
+                        <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50">
+                            <h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3>
+                            <span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span>
+                        </div>
+                        ${itemsHtml}${payHtml}
+                        <button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button>
+                    </div>`;
                 }
-                html += `<div class="bg-gray-50 border p-4 rounded-xl mb-5 mt-6"><h3 class="font-bold text-gray-700 mb-3 text-sm">📍 ပို့ဆောင်ရမည့် လိပ်စာ</h3><div class="space-y-3"><select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-2.5 bg-white rounded border text-sm"></select><select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-2.5 bg-white rounded border text-sm"><option value="">-- ခရိုင် --</option></select><select id="sel-township" class="w-full p-2.5 bg-white rounded border text-sm"><option value="">-- မြို့နယ် --</option></select><input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်..." class="w-full p-2.5 bg-white rounded border text-sm outline-none"><input type="tel" id="input-phone" placeholder="ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-2.5 bg-white rounded border text-sm outline-none"></div></div>`;
-                document.getElementById('cart-content-wrapper').innerHTML = html; document.getElementById('sel-state').innerHTML = getSelectOptions(mmData, "တိုင်းဒေသကြီး");
+                html += `<div class="animate-fade-up bg-slate-50 border border-slate-200 p-5 rounded-3xl mb-5 mt-8 shadow-inner">
+                    <h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> ပို့ဆောင်ရမည့် လိပ်စာ</h3>
+                    <div class="space-y-3.5">
+                        <select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></select>
+                        <select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- ခရိုင် --</option></select>
+                        <select id="sel-township" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- မြို့နယ် --</option></select>
+                        <input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
+                        <input type="tel" id="input-phone" placeholder="ဆက်သွယ်ရမည့် ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
+                    </div>
+                </div>`;
+                document.getElementById('cart-content-wrapper').innerHTML = html; 
+                document.getElementById('sel-state').innerHTML = getSelectOptions(mmData, "တိုင်းဒေသကြီး");
                 for(let vid in vGroups) togglePayMethod(vid, vGroups[vid]);
             }
             function updateAddr(tId, sData) { document.getElementById(tId).innerHTML = getSelectOptions(sData, "ရွေးချယ်ပါ"); }
@@ -799,42 +916,77 @@ async def serve_frontend():
             async function loadBuyerOrders() {
                 const res = await apiFetch('/api/buyer/orders'); const orders = await res.json();
                 const trackIndex = { 'pending': 1, 'approved': 2, 'shipped': 3, 'delivered': 4, 'cancelled': 0 };
-                document.getElementById('buyer-order-list').innerHTML = orders.map(o => {
+                document.getElementById('buyer-order-list').innerHTML = orders.map((o, index) => {
                     let level = trackIndex[o.status]; let progressWidth = level === 0 ? 0 : ((level - 1) / 3) * 100;
-                    let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-3"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">ထုပ်ပိုးဆဲ</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
-                    return `<div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-100"><div class="flex justify-between items-start mb-2 border-b border-gray-50 pb-2"><span class="text-[14px] font-bold text-gray-800">${o.name} <span class="text-blue-500 bg-blue-50 px-1 rounded text-[11px]">x${o.qty}</span></span><span class="font-black text-gray-800">${(o.price * o.qty).toLocaleString()} Ks</span></div>${trackerHtml}<div class="flex justify-between items-center text-[10px] text-gray-400 mt-2"><span>${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span><span>${o.date}</span></div></div>`;
+                    let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-4"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">ထုပ်ပိုးဆဲ</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
+                    const animDelay = (index % 10) * 0.1;
+                    return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${animDelay}s">
+                        <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3">
+                            <span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span>
+                            <span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span>
+                        </div>
+                        ${trackerHtml}
+                        <div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl">
+                            <span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span>
+                            <span>📅 ${o.date}</span>
+                        </div>
+                    </div>`;
                 }).join('');
             }
             
-            // ✅ VENDOR DASHBOARD (WITH PRODUCT EDITING)
+            // VENDOR DASHBOARD
             function switchVendorTab(tab) {
-                ['dash', 'prods', 'profile'].forEach(t => { document.getElementById(`v-tab-${t}`).className = tab === t ? 'flex-1 bg-white shadow-sm py-2 rounded-lg text-sm font-bold text-gray-800' : 'flex-1 py-2 rounded-lg text-sm font-bold text-gray-500'; document.getElementById(`vendor-${t}-view`).style.display = tab === t ? 'block' : 'none'; });
+                ['dash', 'prods', 'profile'].forEach(t => { 
+                    const btn = document.getElementById(`v-tab-${t}`);
+                    btn.className = tab === t ? 'btn-press flex-1 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.05)] py-2.5 rounded-xl text-sm font-extrabold text-indigo-600 transition-all' : 'btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all hover:bg-slate-200/50'; 
+                    document.getElementById(`vendor-${t}-view`).style.display = tab === t ? 'block' : 'none'; 
+                });
                 if(tab === 'dash') loadVendorOrders(); else if(tab === 'prods') loadVendorProducts();
             }
             
             async function loadVendorOrders() {
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
-                document.getElementById('order-list').innerHTML = orders.map(o => `<div class="bg-white p-3 rounded-xl shadow-sm border mb-2"><div class="flex justify-between mb-2"><div class="text-sm font-bold">${o.name} (x${o.qty})</div><div class="text-[10px] uppercase font-bold px-2 py-1 rounded bg-gray-100 text-gray-600">${o.status}</div></div><div class="bg-gray-50 p-2 rounded text-xs text-gray-700 mb-2 border"><div>ဝယ်သူ: ${o.buyer}</div><div>စနစ်: ${o.pay === 'COD' ? '🏠 COD' : '💳 TxID: <b>'+o.tx+'</b>'}</div><div>လိပ်စာ: ${o.addr}</div></div><select onchange="updateOrderStatus(${o.id}, this.value)" class="w-full bg-blue-50 border border-blue-200 text-blue-800 p-2 rounded text-xs font-bold outline-none"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`).join('');
+                document.getElementById('order-list').innerHTML = orders.map((o, index) => {
+                    const animDelay = (index % 10) * 0.1;
+                    return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s">
+                    <div class="flex justify-between items-start mb-3">
+                        <div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div>
+                        <div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
+                        <div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div>
+                        <div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">'+o.tx+'</b>'}</div>
+                        <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
+                    </div>
+                    <select onchange="updateOrderStatus(${o.id}, this.value)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
+                        <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
+                        <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option>
+                        <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
+                        <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
+                        <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
+                    </select>
+                </div>`}).join('');
             }
             
-            async function updateOrderStatus(id, st) { await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); showToast("အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); loadVendorOrders(); }
+            async function updateOrderStatus(id, st) { await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); loadVendorOrders(); }
             
             let vendorProducts = [];
             async function loadVendorProducts() {
                 const res = await apiFetch('/api/vendor/products'); vendorProducts = await res.json();
-                document.getElementById('vendor-product-list').innerHTML = vendorProducts.map(p => {
+                document.getElementById('vendor-product-list').innerHTML = vendorProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300';
+                    const animDelay = (index % 10) * 0.1;
                     return `
-                    <div class="bg-white p-3 rounded-xl shadow-sm border flex gap-3 items-center mb-2">
-                        <img src="${imgSrc}" class="w-16 h-16 object-cover rounded shadow-sm border">
+                    <div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${animDelay}s">
+                        <img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50">
                         <div class="flex-1">
-                            <div class="text-sm font-bold text-gray-800 line-clamp-1">${p.name}</div>
-                            <div class="text-blue-600 text-xs font-bold my-0.5">${p.price.toLocaleString()} Ks</div>
-                            <div class="text-[10px] text-gray-500 font-bold bg-gray-100 inline-block px-1.5 rounded">Stock: ${p.stock}</div>
+                            <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div>
+                            <div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div>
+                            <div class="text-[10px] text-slate-500 font-extrabold bg-slate-100 inline-flex px-2 py-0.5 rounded-md items-center gap-1 border border-slate-200">📦 Stock: ${p.stock}</div>
                         </div>
-                        <div class="flex flex-col gap-1">
-                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="bg-blue-50 text-blue-600 px-3 py-1 rounded text-[11px] font-bold border border-blue-100">ပြင်မည်</button>
-                            <button onclick="if(confirm('ဖျက်မှာသေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="text-red-500 bg-red-50 px-3 py-1 rounded text-[11px] font-bold border border-red-100">ဖျက်မည်</button>
+                        <div class="flex flex-col gap-2">
+                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button>
+                            <button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button>
                         </div>
                     </div>`
                 }).join('');
