@@ -6,4 +6,4 @@ pyTelegramBotAPI
 requests
 redis
 psycopg2-binary
-
+websockets
