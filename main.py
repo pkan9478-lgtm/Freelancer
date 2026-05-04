@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Table-Top, Live Chat & Secure Vendor Order Management)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Live Chat & Vendor Status Manager)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -206,6 +206,7 @@ def get_chat_history(db: Session = Depends(get_db)):
 
 @app.get("/api/locations")
 def get_locations():
+    # ရန်ကုန်နှင့် မန္တလေး (Code အရှည်မဖြစ်စေရန် Sample အနေဖြင့်ထားရှိသည်၊ မြို့နယ်အပြည့်အစုံကို လိုအပ်ပါက ဖြည့်စွက်နိုင်သည်)
     return {
         "ရန်ကုန်တိုင်းဒေသကြီး": {
             "ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"],
@@ -217,7 +218,7 @@ def get_locations():
             "မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"],
             "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"]
         }
-    } # Keeping brief for code length limit; logic remains dynamically same for UI.
+    } 
 
 @app.get("/api/notifications")
 def get_notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
