@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Boolean, Text, text
 from sqlalchemy.orm import sessionmaker, Session, relationship, declarative_base
 import redis
 from telebot import TeleBot, types
@@ -58,7 +58,7 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
-    # Vendor Payment Profile Settings - Default COD True
+    # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
     kpay_phone = Column(String, default="")
     wave_phone = Column(String, default="")
@@ -85,14 +85,13 @@ class Order(Base):
     quantity = Column(Integer, default=1) 
     payment_method = Column(String, default="QR") 
     transaction_id = Column(String, default="") 
-    payment_slip = Column(Text, default="") # New Column for Security
+    payment_slip = Column(Text, default="") # New Column for Security Base64
     address = Column(String) 
     status = Column(String, default="pending") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     product = relationship("Product")
     user = relationship("User")
 
-# User Notification System
 class Notification(Base):
     __tablename__ = "notifications"
     id = Column(Integer, primary_key=True)
@@ -102,6 +101,13 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
+
+# Feature 1: Auto-Migration Database (Prevent 500 Server Error)
+try:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
+except Exception:
+    pass # Column exists, continue safely.
 
 def get_db():
     db = SessionLocal()
@@ -159,92 +165,21 @@ def authenticate_user(user: User = Depends(get_current_user)):
 @app.get("/api/locations")
 def get_locations():
     return {
-        "ရန်ကုန်တိုင်းဒေသကြီး": {
-            "ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"],
-            "ရန်ကုန်အရှေ့ပိုင်းခရိုင်": ["သင်္ဃန်းကျွန်း", "ရန်ကင်း", "တောင်ဥက္ကလာပ", "မြောက်ဥက္ကလာပ", "သာကေတ", "ဒေါပုံ", "တာမွေ", "ပုဇွန်တောင်", "ဗိုလ်တထောင်", "ဒဂုံမြို့သစ်(တောင်ပိုင်း)", "ဒဂုံမြို့သစ်(မြောက်ပိုင်း)", "ဒဂုံမြို့သစ်(အရှေ့ပိုင်း)", "ဒဂုံမြို့သစ်(ဆိပ်ကမ်း)"],
-            "ရန်ကုန်မြောက်ပိုင်းခရိုင်": ["အင်းစိန်", "မင်္ဂလာဒုံ", "မှော်ဘီ", "လှည်းကူး", "တိုက်ကြီး", "ထန်းတပင်", "ရွှေပြည်သာ", "လှိုင်သာယာ"],
-            "ရန်ကုန်တောင်ပိုင်းခရိုင်": ["သန်လျင်", "ကျောက်တန်း", "ခရမ်း", "သုံးခွ", "တွံတေး", "ကော့မှူး", "ကွမ်းခြံကုန်း", "ဒလ", "ဆိပ်ကြီးခနောင်တို"]
-        },
-        "မန္တလေးတိုင်းဒေသကြီး": {
-            "မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"],
-            "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"],
-            "ကျောက်ဆည်ခရိုင်": ["ကျောက်ဆည်", "စဉ့်ကိုင်", "မြစ်သား", "တံတားဦး"],
-            "မိတ္ထီလာခရိုင်": ["မိတ္ထီလာ", "မလှိုင်", "သာစည်", "ဝမ်းတွင်း"],
-            "မြင်းခြံခရိုင်": ["မြင်းခြံ", "တောင်သာ", "နွားထိုးကြီး", "ကျောက်ပန်းတောင်း", "ငါန်းဇွန်"],
-            "ညောင်ဦးခရိုင်": ["ညောင်ဦး", "ကျောက်ပန်းတောင်း"],
-            "ရမည်းသင်းခရိုင်": ["ရမည်းသင်း", "ပျော်ဘွယ်"]
-        },
-        "နေပြည်တော်": {
-            "ဥတ္တရခရိုင်": ["ဥတ္တရသီရိ", "ပုဗ္ဗသီရိ", "ဇေယျာသီရိ", "တပ်ကုန်း"],
-            "ဒက္ခိဏခရိုင်": ["ဒက္ခိဏသီရိ", "ဇမ္ဗူသီရိ", "ပျဉ်းမနား", "လယ်ဝေး"]
-        },
-        "ပဲခူးတိုင်းဒေသကြီး": {
-            "ပဲခူးခရိုင်": ["ပဲခူး", "ဒိုက်ဦး", "ကဝ", "သနပ်ပင်", "ဝေါ", "ညောင်လေးပင်", "ကျောက်တံခါး", "ရွှေကျင်"],
-            "တောင်ငူခရိုင်": ["တောင်ငူ", "ရေတာရှည်", "ကျောက်ကြီး", "ဖြူး", "အုတ်တွင်း", "ထန်းတပင်"],
-            "ပြည်ခရိုင်": ["ပြည်", "ပေါက်ခေါင်း", "ပန်းတောင်း", "ပေါင်းတည်", "သဲကုန်း", "ရွှေတောင်"],
-            "သာယာဝတီခရိုင်": ["သာယာဝတီ", "လက်ပံတန်း", "မင်းလှ", "မိုးညို", "အုတ်ဖို", "ကြို့ပင်ကောက်", "ဇီးကုန်း", "နတ်တလင်း"]
-        },
-        "ဧရာဝတီတိုင်းဒေသကြီး": {
-            "ပုသိမ်ခရိုင်": ["ပုသိမ်", "ကန်ကြီးထောင့်", "သာပေါင်း", "ငပုတော", "ကျုံပျော်", "ရေကြည်", "ကျောင်းကုန်း"],
-            "ဟင်္သာတခရိုင်": ["ဟင်္သာတ", "ဇလွန်", "လေးမျက်နှာ", "မြန်အောင်", "ကြံခင်း", "အင်္ဂပူ"],
-            "မြောင်းမြခရိုင်": ["မြောင်းမြ", "အိမ်မဲ", "ဝါးခယ်မ"],
-            "မအူပင်ခရိုင်": ["မအူပင်", "ပန်းတနော်", "ညောင်တုန်း", "ဓနုဖြူ"],
-            "ဖျာပုံခရိုင်": ["ဖျာပုံ", "ဘိုကလေး", "ကျိုက်လတ်", "ဒေးဒရဲ"],
-            "လပွတ္တာခရိုင်": ["လပွတ္တာ", "မော်လမြိုင်ကျွန်း"]
-        },
-        "မွန်ပြည်နယ်": {
-            "မော်လမြိုင်ခရိုင်": ["မော်လမြိုင်", "ကျိုက်မရော", "ချောင်းဆုံ", "သံဖြူဇရပ်", "မုဒုံ", "ရေး"],
-            "သထုံခရိုင်": ["သထုံ", "ပေါင်", "ကျိုက်ထို", "ဘီးလင်း"]
-        },
-        "ရှမ်းပြည်နယ်": {
-            "တောင်ကြီးခရိုင်": ["တောင်ကြီး", "ညောင်ရွှေ", "ဟိုပုံး", "ဆီဆိုင်", "ကလော", "ပင်းတယ", "ရွာငံ", "ရပ်စောက်"],
-            "လားရှိုးခရိုင်": ["လားရှိုး", "သိန္နီ", "မိုင်းရယ်", "တန့်ယန်း"],
-            "ကျိုင်းတုံခရိုင်": ["ကျိုင်းတုံ", "မိုင်းခတ်", "မိုင်းပြင်း", "မိုင်းယန်း"],
-            "တာချီလိတ်ခရိုင်": ["တာချီလိတ်", "မိုင်းဖြတ်", "မိုင်းယောင်း"],
-            "မူဆယ်ခရိုင်": ["မူဆယ်", "နမ့်ခမ်း", "ကွတ်ခိုင်"]
-        },
-        "စစ်ကိုင်းတိုင်းဒေသကြီး": {
-            "စစ်ကိုင်းခရိုင်": ["စစ်ကိုင်း", "မြင်းမူ", "မြောင်"],
-            "မုံရွာခရိုင်": ["မုံရွာ", "အရာတော်", "ချောင်းဦး", "ဘုတလင်"],
-            "ရွှေဘိုခရိုင်": ["ရွှေဘို", "ခင်ဦး", "ဝက်လက်", "ကန့်ဘလူ", "ကျွန်းလှ", "ရေဦး", "ဒီပဲယင်း", "တန့်ဆည်"],
-            "ကလေးခရိုင်": ["ကလေး", "ကလေးဝ", "မင်းကင်း"]
-        },
-        "မကွေးတိုင်းဒေသကြီး": {
-            "မကွေးခရိုင်": ["မကွေး", "ရေနံချောင်း", "ချောက်", "တောင်တွင်းကြီး", "မြို့သစ်", "နတ်မောက်"],
-            "မင်းဘူးခရိုင်": ["မင်းဘူး", "ပွင့်ဖြူ", "ငဖဲ", "စေတုတ္တရာ"],
-            "ပခုက္ကူခရိုင်": ["ပခုက္ကူ", "ရေစကြို", "မြိုင်", "ပေါက်", "ဆိပ်ဖြူ"],
-            "သရက်ခရိုင်": ["သရက်", "မင်းတုန်း", "မင်းလှ", "အောင်လံ", "ကံမ", "ဆင်ပေါင်ဝဲ"]
-        },
-        "ကရင်ပြည်နယ်": {
-            "ဘားအံခရိုင်": ["ဘားအံ", "လှိုင်းဘွဲ", "ဖာပွန်", "သံတောင်ကြီး"],
-            "မြဝတီခရိုင်": ["မြဝတီ"],
-            "ကော့ကရိတ်ခရိုင်": ["ကော့ကရိတ်", "ကြာအင်းဆိပ်ကြီး"]
-        },
-        "ကယားပြည်နယ်": {
-            "လွိုင်ကော်ခရိုင်": ["လွိုင်ကော်", "ဒီမော့ဆို", "ဖရူဆို", "ရှားတော"],
-            "ဘောလခဲခရိုင်": ["ဘောလခဲ", "ဖားဆောင်း", "မယ်စဲ့"]
-        },
-        "ကချင်ပြည်နယ်": {
-            "မြစ်ကြီးနားခရိုင်": ["မြစ်ကြီးနား", "ဝိုင်းမော်", "အင်ဂျန်းယန်", "တနိုင်း", "ချီဖွေ", "ဆော့လော်"],
-            "ဗန်းမော်ခရိုင်": ["ဗန်းမော်", "ရွှေကူ", "မိုးမောက်", "မန်စီ"],
-            "မိုးညှင်းခရိုင်": ["မိုးညှင်း", "မိုးကောင်း", "ဖားကန့်"]
-        },
-        "ချင်းပြည်နယ်": {
-            "ဟားခါးခရိုင်": ["ဟားခါး", "ထန်တလန်"],
-            "ဖလမ်းခရိုင်": ["ဖလမ်း", "တီတိန်", "တွန်းဇံ"],
-            "မင်းတပ်ခရိုင်": ["မင်းတပ်", "မတူပီ", "ကန်ပက်လက်", "ပလက်ဝ"]
-        },
-        "ရခိုင်ပြည်နယ်": {
-            "စစ်တွေခရိုင်": ["စစ်တွေ", "ပုဏ္ဏားကျွန်း", "မြောက်ဦး", "ကျောက်တော်", "မင်းပြား", "မြေပုံ", "ပေါက်တော", "ရသေ့တောင်"],
-            "မောင်တောခရိုင်": ["မောင်တော", "ဘူးသီးတောင်"],
-            "ကျောက်ဖြူခရိုင်": ["ကျောက်ဖြူ", "မာန်အောင်", "ရမ်းဗြဲ", "အမ်း"],
-            "သံတွဲခရိုင်": ["သံတွဲ", "တောင်ကုတ်", "ဂွ"]
-        },
-        "တနင်္သာရီတိုင်းဒေသကြီး": {
-            "ထားဝယ်ခရိုင်": ["ထားဝယ်", "လောင်းလုံး", "သရက်ချောင်း", "ရေဖြူ"],
-            "မြိတ်ခရိုင်": ["မြိတ်", "ကျွန်းစု", "ပုလော", "တနင်္သာရီ"],
-            "ကော့သောင်းခရိုင်": ["ကော့သောင်း", "ဘုတ်ပြင်း"]
-        }
+        "ရန်ကုန်တိုင်းဒေသကြီး": {"ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"], "ရန်ကုန်အရှေ့ပိုင်းခရိုင်": ["သင်္ဃန်းကျွန်း", "ရန်ကင်း", "တောင်ဥက္ကလာပ", "မြောက်ဥက္ကလာပ", "သာကေတ", "ဒေါပုံ", "တာမွေ", "ပုဇွန်တောင်", "ဗိုလ်တထောင်", "ဒဂုံမြို့သစ်(တောင်ပိုင်း)", "ဒဂုံမြို့သစ်(မြောက်ပိုင်း)", "ဒဂုံမြို့သစ်(အရှေ့ပိုင်း)", "ဒဂုံမြို့သစ်(ဆိပ်ကမ်း)"], "ရန်ကုန်မြောက်ပိုင်းခရိုင်": ["အင်းစိန်", "မင်္ဂလာဒုံ", "မှော်ဘီ", "လှည်းကူး", "တိုက်ကြီး", "ထန်းတပင်", "ရွှေပြည်သာ", "လှိုင်သာယာ"], "ရန်ကုန်တောင်ပိုင်းခရိုင်": ["သန်လျင်", "ကျောက်တန်း", "ခရမ်း", "သုံးခွ", "တွံတေး", "ကော့မှူး", "ကွမ်းခြံကုန်း", "ဒလ", "ဆိပ်ကြီးခနောင်တို"]},
+        "မန္တလေးတိုင်းဒေသကြီး": {"မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"], "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"], "ကျောက်ဆည်ခရိုင်": ["ကျောက်ဆည်", "စဉ့်ကိုင်", "မြစ်သား", "တံတားဦး"], "မိတ္ထီလာခရိုင်": ["မိတ္ထီလာ", "မလှိုင်", "သာစည်", "ဝမ်းတွင်း"], "မြင်းခြံခရိုင်": ["မြင်းခြံ", "တောင်သာ", "နွားထိုးကြီး", "ကျောက်ပန်းတောင်း", "ငါန်းဇွန်"], "ညောင်ဦးခရိုင်": ["ညောင်ဦး", "ကျောက်ပန်းတောင်း"], "ရမည်းသင်းခရိုင်": ["ရမည်းသင်း", "ပျော်ဘွယ်"]},
+        "နေပြည်တော်": {"ဥတ္တရခရိုင်": ["ဥတ္တရသီရိ", "ပုဗ္ဗသီရိ", "ဇေယျာသီရိ", "တပ်ကုန်း"], "ဒက္ခိဏခရိုင်": ["ဒက္ခိဏသီရိ", "ဇမ္ဗူသီရိ", "ပျဉ်းမနား", "လယ်ဝေး"]},
+        "ပဲခူးတိုင်းဒေသကြီး": {"ပဲခူးခရိုင်": ["ပဲခူး", "ဒိုက်ဦး", "ကဝ", "သနပ်ပင်", "ဝေါ", "ညောင်လေးပင်", "ကျောက်တံခါး", "ရွှေကျင်"], "တောင်ငူခရိုင်": ["တောင်ငူ", "ရေတာရှည်", "ကျောက်ကြီး", "ဖြူး", "အုတ်တွင်း", "ထန်းတပင်"], "ပြည်ခရိုင်": ["ပြည်", "ပေါက်ခေါင်း", "ပန်းတောင်း", "ပေါင်းတည်", "သဲကုန်း", "ရွှေတောင်"], "သာယာဝတီခရိုင်": ["သာယာဝတီ", "လက်ပံတန်း", "မင်းလှ", "မိုးညို", "အုတ်ဖို", "ကြို့ပင်ကောက်", "ဇီးကုန်း", "နတ်တလင်း"]},
+        "ဧရာဝတီတိုင်းဒေသကြီး": {"ပုသိမ်ခရိုင်": ["ပုသိမ်", "ကန်ကြီးထောင့်", "သာပေါင်း", "ငပုတော", "ကျုံပျော်", "ရေကြည်", "ကျောင်းကုန်း"], "ဟင်္သာတခရိုင်": ["ဟင်္သာတ", "ဇလွန်", "လေးမျက်နှာ", "မြန်အောင်", "ကြံခင်း", "အင်္ဂပူ"], "မြောင်းမြခရိုင်": ["မြောင်းမြ", "အိမ်မဲ", "ဝါးခယ်မ"], "မအူပင်ခရိုင်": ["မအူပင်", "ပန်းတနော်", "ညောင်တုန်း", "ဓနုဖြူ"], "ဖျာပုံခရိုင်": ["ဖျာပုံ", "ဘိုကလေး", "ကျိုက်လတ်", "ဒေးဒရဲ"], "လပွတ္တာခရိုင်": ["လပွတ္တာ", "မော်လမြိုင်ကျွန်း"]},
+        "မွန်ပြည်နယ်": {"မော်လမြိုင်ခရိုင်": ["မော်လမြိုင်", "ကျိုက်မရော", "ချောင်းဆုံ", "သံဖြူဇရပ်", "မုဒုံ", "ရေး"], "သထုံခရိုင်": ["သထုံ", "ပေါင်", "ကျိုက်ထို", "ဘီးလင်း"]},
+        "ရှမ်းပြည်နယ်": {"တောင်ကြီးခရိုင်": ["တောင်ကြီး", "ညောင်ရွှေ", "ဟိုပုံး", "ဆီဆိုင်", "ကလော", "ပင်းတယ", "ရွာငံ", "ရပ်စောက်"], "လားရှိုးခရိုင်": ["လားရှိုး", "သိန္နီ", "မိုင်းရယ်", "တန့်ယန်း"], "ကျိုင်းတုံခရိုင်": ["ကျိုင်းတုံ", "မိုင်းခတ်", "မိုင်းပြင်း", "မိုင်းယန်း"], "တာချီလိတ်ခရိုင်": ["တာချီလိတ်", "မိုင်းဖြတ်", "မိုင်းယောင်း"], "မူဆယ်ခရိုင်": ["မူဆယ်", "နမ့်ခမ်း", "ကွတ်ခိုင်"]},
+        "စစ်ကိုင်းတိုင်းဒေသကြီး": {"စစ်ကိုင်းခရိုင်": ["စစ်ကိုင်း", "မြင်းမူ", "မြောင်"], "မုံရွာခရိုင်": ["မုံရွာ", "အရာတော်", "ချောင်းဦး", "ဘုတလင်"], "ရွှေဘိုခရိုင်": ["ရွှေဘို", "ခင်ဦး", "ဝက်လက်", "ကန့်ဘလူ", "ကျွန်းလှ", "ရေဦး", "ဒီပဲယင်း", "တန့်ဆည်"], "ကလေးခရိုင်": ["ကလေး", "ကလေးဝ", "မင်းကင်း"]},
+        "မကွေးတိုင်းဒေသကြီး": {"မကွေးခရိုင်": ["မကွေး", "ရေနံချောင်း", "ချောက်", "တောင်တွင်းကြီး", "မြို့သစ်", "နတ်မောက်"], "မင်းဘူးခရိုင်": ["မင်းဘူး", "ပွင့်ဖြူ", "ငဖဲ", "စေတုတ္တရာ"], "ပခုက္ကူခရိုင်": ["ပခုက္ကူ", "ရေစကြို", "မြိုင်", "ပေါက်", "ဆိပ်ဖြူ"], "သရက်ခရိုင်": ["သရက်", "မင်းတုန်း", "မင်းလှ", "အောင်လံ", "ကံမ", "ဆင်ပေါင်ဝဲ"]},
+        "ကရင်ပြည်နယ်": {"ဘားအံခရိုင်": ["ဘားအံ", "လှိုင်းဘွဲ", "ဖာပွန်", "သံတောင်ကြီး"], "မြဝတီခရိုင်": ["မြဝတီ"], "ကော့ကရိတ်ခရိုင်": ["ကော့ကရိတ်", "ကြာအင်းဆိပ်ကြီး"]},
+        "ကယားပြည်နယ်": {"လွိုင်ကော်ခရိုင်": ["လွိုင်ကော်", "ဒီမော့ဆို", "ဖရူဆို", "ရှားတော"], "ဘောလခဲခရိုင်": ["ဘောလခဲ", "ဖားဆောင်း", "မယ်စဲ့"]},
+        "ကချင်ပြည်နယ်": {"မြစ်ကြီးနားခရိုင်": ["မြစ်ကြီးနား", "ဝိုင်းမော်", "အင်ဂျန်းယန်", "တနိုင်း", "ချီဖွေ", "ဆော့လော်"], "ဗန်းမော်ခရိုင်": ["ဗန်းမော်", "ရွှေကူ", "မိုးမောက်", "မန်စီ"], "မိုးညှင်းခရိုင်": ["မိုးညှင်း", "မိုးကောင်း", "ဖားကန့်"]},
+        "ချင်းပြည်နယ်": {"ဟားခါးခရိုင်": ["ဟားခါး", "ထန်တလန်"], "ဖလမ်းခရိုင်": ["ဖလမ်း", "တီတိန်", "တွန်းဇံ"], "မင်းတပ်ခရိုင်": ["မင်းတပ်", "မတူပီ", "ကန်ပက်လက်", "ပလက်ဝ"]},
+        "ရခိုင်ပြည်နယ်": {"စစ်တွေခရိုင်": ["စစ်တွေ", "ပုဏ္ဏားကျွန်း", "မြောက်ဦး", "ကျောက်တော်", "မင်းပြား", "မြေပုံ", "ပေါက်တော", "ရသေ့တောင်"], "မောင်တောခရိုင်": ["မောင်တော", "ဘူးသီးတောင်"], "ကျောက်ဖြူခရိုင်": ["ကျောက်ဖြူ", "မာန်အောင်", "ရမ်းဗြဲ", "အမ်း"], "သံတွဲခရိုင်": ["သံတွဲ", "တောင်ကုတ်", "ဂွ"]},
+        "တနင်္သာရီတိုင်းဒေသကြီး": {"ထားဝယ်ခရိုင်": ["ထားဝယ်", "လောင်းလုံး", "သရက်ချောင်း", "ရေဖြူ"], "မြိတ်ခရိုင်": ["မြိတ်", "ကျွန်းစု", "ပုလော", "တနင်္သာရီ"], "ကော့သောင်းခရိုင်": ["ကော့သောင်း", "ဘုတ်ပြင်း"]}
     }
 
 @app.get("/api/notifications")
@@ -294,8 +229,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         data = await req.json()
         cart_items = data.get('cart', []) 
         tx_id = data.get('transaction_id', '')
-        payment_slip_b64 = data.get('payment_slip', '') # Read Secure Slip
-        payment_method = data.get('payment_method', 'COD') # Default as COD 
+        payment_slip_b64 = data.get('payment_slip', '') 
+        payment_method = data.get('payment_method', 'COD') 
         address = data.get('address', 'Unknown')
         phone = data.get('phone', '')
 
@@ -311,7 +246,6 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             qty = item.get('qty', 1)
             
             product = db.query(Product).filter(Product.id == p_id).first()
-            
             if not product:
                 db.rollback()
                 raise HTTPException(status_code=400, detail="အချို့ပစ္စည်းများမှာ စနစ်ထဲတွင် မရှိတော့ပါ။")
@@ -320,7 +254,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
                 db.rollback()
                 raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
                 
-            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method, payment_slip="Uploaded" if payment_slip_b64 else ""))
+            # App အတွင်း ကြည့်ရှုရန် Slip ပုံကို Database ထဲသို့ သိမ်းမည်
+            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method, payment_slip=payment_slip_b64 if payment_slip_b64 else ""))
             
             product.stock -= qty 
             total_amount += (product.price * qty)
@@ -333,7 +268,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         if phone and user.phone != phone: user.phone = phone
         db.commit()
 
-        # Alert and Anti-Scam Verify Workflow
+        # Telegram ဘက်သို့ ပေးပို့သည့်စနစ်
         try:
             items_str = "\n".join([f"- {n}" for n in ordered_names])
             pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ ID: `{tx_id}`" if tx_id else "ငွေလွှဲပြေစာ ပူးတွဲပါရှိပါသည်"
@@ -350,8 +285,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
                     try:
                         img_data = base64.b64decode(payment_slip_b64.split(',')[1] if ',' in payment_slip_b64 else payment_slip_b64)
                         bot.send_photo(vendor_notify, photo=img_data, caption=vendor_caption, parse_mode="Markdown")
-                    except Exception as e:
-                        bot.send_message(vendor_notify, vendor_caption + "\n_(ငွေလွှဲပြေစာပုံ ပို့ဆောင်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်)_", parse_mode="Markdown")
+                    except Exception:
+                        bot.send_message(vendor_notify, vendor_caption + "\n_(ငွေလွှဲပြေစာပုံအား App ထဲရှိ စီမံရန် -> အော်ဒါများ တွင် ဝင်ကြည့်ပါ။)_", parse_mode="Markdown")
                 else:
                     bot.send_message(vendor_notify, vendor_caption, parse_mode="Markdown")
         except Exception as e: 
@@ -363,6 +298,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         raise
     except Exception as e:
         db.rollback()
+        print(f"Checkout Error Log: {str(e)}") # Log error for debugging
         raise HTTPException(status_code=500, detail="စနစ်ချို့ယွင်းမှုဖြစ်ပေါ်နေပါသည်။ ခေတ္တစောင့်ပါ။")
 
 @app.get("/api/buyer/orders")
@@ -374,7 +310,8 @@ def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depen
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id).order_by(Order.created_at.desc()).all()
-    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "has_slip": bool(o.payment_slip)} for o in orders]
+    # Return slip_img to frontend
+    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "slip_img": o.payment_slip if o.payment_slip else ""} for o in orders]
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -387,29 +324,24 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
     }
     
     order = db.query(Order).filter(Order.id == order_id).first()
-    # Security: Ensure only the vendor of the product or admin can update the status
     if not order or (order.product.vendor_id != user.id and user.role != "admin"): 
         raise HTTPException(status_code=400, detail="Permission Denied")
     
     new_status = request.query_params.get("status")
     if new_status not in status_map: raise HTTPException(status_code=400, detail="Invalid Status")
     
-    # Auto-revert stock if order is cancelled
     if new_status == "cancelled" and order.status != "cancelled": 
         order.product.stock += order.quantity 
-    # Deduct stock if it was cancelled but now reverted to active
     elif order.status == "cancelled" and new_status != "cancelled":
         order.product.stock -= order.quantity
 
     order.status = new_status
     
-    # Notify buyer in-app
     short_status = status_map[new_status][1]
     noti_msg = f"သင့်အော်ဒါ '{order.product.name}' ၏ အခြေအနေမှာ '{short_status}' သို့ ပြောင်းလဲသွားပါသည်။"
     db.add(Notification(user_id=order.user_id, message=noti_msg))
     db.commit()
 
-    # Notify buyer via Telegram
     try: bot.send_message(order.user.telegram_id, f"{status_map[new_status][0]}\nပစ္စည်း: **{order.product.name} (x{order.quantity})**", parse_mode="Markdown")
     except: pass
     
@@ -547,7 +479,7 @@ async def serve_frontend():
             .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             
             /* Modals */
-            .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
+            .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(6px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
             .slide-up-modal.active { display: flex; animation: fadeIn 0.2s; }
@@ -608,6 +540,16 @@ async def serve_frontend():
                     <button onclick="document.getElementById('noti-modal').classList.remove('active')" class="btn-press text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
                 </div>
                 <div id="noti-list" class="space-y-3 pb-5 min-h-[200px]"></div>
+            </div>
+        </div>
+
+        <div id="slip-viewer-modal" class="modal-overlay" onclick="closeSlipModal()">
+            <div class="w-full max-w-sm rounded-[24px] relative animate-fade-up flex flex-col items-center" onclick="event.stopPropagation()">
+                <button onclick="closeSlipModal()" class="absolute -top-12 right-0 text-white bg-white/20 hover:bg-white/40 backdrop-blur rounded-full w-10 h-10 flex items-center justify-center font-bold text-2xl btn-press transition">&times;</button>
+                <div class="bg-white p-2 rounded-2xl shadow-2xl w-full">
+                    <h3 class="font-extrabold text-center text-slate-800 py-3 border-b border-slate-100">💳 ဝယ်သူတင်ထားသော ငွေလွှဲပြေစာ</h3>
+                    <img id="slip-viewer-img" class="w-full h-auto max-h-[65vh] object-contain rounded-xl mt-2 bg-slate-50">
+                </div>
             </div>
         </div>
 
@@ -678,13 +620,13 @@ async def serve_frontend():
                         <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
                             <label class="block text-xs font-extrabold text-indigo-700 mb-2">KPay ဖုန်း / QR</label>
                             <input type="text" id="prof-kpay-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
-                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-kpay-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition">
+                            <input type="file" accept="image/*" onchange="encodeProfileQR(this, 'prof-kpay-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition">
                             <input type="hidden" id="prof-kpay-qr"><img id="prof-kpay-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
                         </div>
                         <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
                             <label class="block text-xs font-extrabold text-amber-600 mb-2">WavePay ဖုန်း / QR</label>
                             <input type="text" id="prof-wave-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-amber-500 transition">
-                            <input type="file" accept="image/*" onchange="encodeImage(this, 'prof-wave-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100 transition">
+                            <input type="file" accept="image/*" onchange="encodeProfileQR(this, 'prof-wave-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100 transition">
                             <input type="hidden" id="prof-wave-qr"><img id="prof-wave-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
                         </div>
                     </div>
@@ -732,7 +674,6 @@ async def serve_frontend():
                     const res = await apiFetch('/api/auth'); const data = await res.json();
                     currentUser = data.user;
                     
-                    // Default to true for COD explicitly on UI side if not strictly set to false
                     document.getElementById('prof-cod').checked = (currentUser.accept_cod !== undefined) ? currentUser.accept_cod : true;
                     document.getElementById('prof-kpay-ph').value = currentUser.kpay_phone || '';
                     document.getElementById('prof-wave-ph').value = currentUser.wave_phone || '';
@@ -781,18 +722,48 @@ async def serve_frontend():
 
             // SELLER LOGIC
             function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Bot Chat ထဲသို့ ပစ္စည်းပုံနှင့် ဈေးနှုန်းရေးပို့ပါ။ အခုပဲ App ကိုပိတ်ပြီး ပို့မလား?", (r) => { if(r) tg.close(); }); }
-            function encodeImage(el, targetId) {
+            
+            // Simple Base64 encode for Profile QR Codes (Doesn't need heavy compression)
+            function encodeProfileQR(el, targetId) {
                 let f = el.files[0]; if(!f) return; let r = new FileReader();
                 r.onloadend = function() { 
                     document.getElementById(targetId).value = r.result; 
                     let preview = document.getElementById(targetId + '-preview');
-                    if(preview) {
-                        preview.src = r.result; 
-                        preview.classList.remove('hidden'); 
-                    }
+                    if(preview) { preview.src = r.result; preview.classList.remove('hidden'); }
                 }; 
                 r.readAsDataURL(f);
             }
+
+            // FEATURE 2: Advanced Client-Side Image Compression (Fixes 500 Payload Limit Error)
+            function compressAndEncodeSlip(el, targetId) {
+                let file = el.files[0]; if(!file) return; 
+                let reader = new FileReader();
+                reader.onloadend = function(e) { 
+                    let img = new Image();
+                    img.onload = function() {
+                        let canvas = document.createElement('canvas');
+                        let ctx = canvas.getContext('2d');
+                        let maxW = 800; let maxH = 800; // Resize bounds
+                        let width = img.width; let height = img.height;
+                        
+                        if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } 
+                        else { if (height > maxH) { width *= maxH / height; height = maxH; } }
+                        
+                        canvas.width = width; canvas.height = height;
+                        ctx.drawImage(img, 0, 0, width, height);
+                        
+                        // Compress Image Quality to 70% (Greatly reduces size for Base64 Upload)
+                        let dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
+                        document.getElementById(targetId).value = dataUrl; 
+                        
+                        let preview = document.getElementById(targetId + '-preview');
+                        if(preview) { preview.src = dataUrl; preview.classList.remove('hidden'); }
+                    };
+                    img.src = e.target.result;
+                }; 
+                reader.readAsDataURL(file);
+            }
+            
             async function saveVendorProfile() {
                 tg.MainButton.showProgress();
                 const payload = { accept_cod: document.getElementById('prof-cod').checked, kpay_phone: document.getElementById('prof-kpay-ph').value, wave_phone: document.getElementById('prof-wave-ph').value, kpay_qr: document.getElementById('prof-kpay-qr').value, wave_qr: document.getElementById('prof-wave-qr').value };
@@ -874,7 +845,7 @@ async def serve_frontend():
                 }
             }
 
-            // CART & CHECKOUT (Secure Verification Enhanced)
+            // CART & CHECKOUT
             function renderGroupedCart() {
                 if(cart.length === 0) { document.getElementById('cart-empty-state').classList.remove('hidden'); document.getElementById('cart-content-wrapper').innerHTML = ''; return; }
                 document.getElementById('cart-empty-state').classList.add('hidden');
@@ -899,12 +870,10 @@ async def serve_frontend():
                         </div>
                     </div>`).join('');
                     
-                    // DEFAULT COD SETTING & SLIP UPLOAD
                     let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4">
                         <label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label>
                         <select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
                     
-                    // Force COD if available or vendor selected
                     if(g.vendor_cod || (!g.kpay_phone && !g.wave_phone)) payHtml += `<option value="COD" selected>🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
                     if(g.kpay_phone || g.kpay_qr) payHtml += `<option value="KPay">📲 KPay ဖြင့် ငွေလွှဲမည်</option>`;
                     if(g.wave_phone || g.wave_qr) payHtml += `<option value="Wave">📲 WavePay ဖြင့် ငွေလွှဲမည်</option>`;
@@ -917,7 +886,7 @@ async def serve_frontend():
                         <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden">
                             <div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
                             <label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label>
-                            <input type="file" accept="image/*" id="slip_input_${vid}" onchange="encodeImage(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none">
+                            <input type="file" accept="image/*" id="slip_input_${vid}" onchange="compressAndEncodeSlip(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none">
                             <input type="hidden" id="slip_base64_${vid}">
                             <img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2">
                         </div>
@@ -1042,6 +1011,14 @@ async def serve_frontend():
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
                     const animDelay = (index % 10) * 0.1;
+                    
+                    // FEATURE 3: View Slip Button Logic
+                    let slipBtnHtml = '';
+                    if(o.slip_img) {
+                        // Safe passing of Base64 string via click handler
+                        slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
+                    }
+
                     return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s">
                     <div class="flex justify-between items-start mb-3">
                         <div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div>
@@ -1049,8 +1026,8 @@ async def serve_frontend():
                     </div>
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
                         <div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div>
-                        <div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} 
-                        ${o.has_slip ? '<span class="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded ml-1 text-[9px] font-bold border border-emerald-200">📸 ပြေစာပါသည်</span>' : ''}
+                        <div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} 
+                        ${slipBtnHtml}
                         </div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
@@ -1064,6 +1041,16 @@ async def serve_frontend():
                 </div>`}).join('');
             }
             
+            // View Slip Modal Functions
+            function viewSlip(imgData) {
+                document.getElementById('slip-viewer-img').src = imgData;
+                document.getElementById('slip-viewer-modal').classList.add('active');
+            }
+            function closeSlipModal() {
+                document.getElementById('slip-viewer-modal').classList.remove('active');
+                setTimeout(() => { document.getElementById('slip-viewer-img').src = ''; }, 300);
+            }
+
             function updateOrderStatus(id, st, selectElement) {
                 const statusNames = { 'pending': '⏳ စစ်ဆေးဆဲ', 'approved': '📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)', 'shipped': '🚚 ပို့ဆောင်လိုက်ပြီ', 'delivered': '✅ ရောက်ရှိပါပြီ', 'cancelled': '❌ ပယ်ဖျက်မည်' };
                 tg.showConfirm(`ဤအော်ဒါကို '${statusNames[st]}' အဖြစ် အတည်ပြုပြောင်းလဲမှာ သေချာပါသလား?`, async function(confirm) {
@@ -1100,7 +1087,6 @@ async def serve_frontend():
                 }).join('');
             }
 
-            // Edit Product Functions
             function openEditModal(prod) {
                 document.getElementById('edit-prod-id').value = prod.id;
                 document.getElementById('edit-prod-name').value = prod.name;
