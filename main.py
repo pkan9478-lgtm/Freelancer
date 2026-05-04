@@ -5,6 +5,7 @@ import json
 import threading
 import datetime
 import time
+import base64
 import requests
 from urllib.parse import parse_qs
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
@@ -84,6 +85,7 @@ class Order(Base):
     quantity = Column(Integer, default=1) 
     payment_method = Column(String, default="QR") 
     transaction_id = Column(String, default="") 
+    payment_slip = Column(Text, default="") # New Column for Secure Slip Verification
     address = Column(String) 
     status = Column(String, default="pending") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -292,6 +294,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         data = await req.json()
         cart_items = data.get('cart', []) 
         tx_id = data.get('transaction_id', '')
+        payment_slip_b64 = data.get('payment_slip', '') # Get Base64 Slip Image
         payment_method = data.get('payment_method', 'QR') 
         address = data.get('address', 'Unknown')
         phone = data.get('phone', '')
@@ -317,7 +320,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
                 db.rollback()
                 raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
                 
-            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method))
+            db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method, payment_slip="Uploaded" if payment_slip_b64 else ""))
             
             product.stock -= qty 
             total_amount += (product.price * qty)
@@ -330,12 +333,29 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         if phone and user.phone != phone: user.phone = phone
         db.commit()
 
+        # Send Notifications & Payment Slip
         try:
             items_str = "\n".join([f"- {n}" for n in ordered_names])
-            pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ: `{tx_id}`"
+            pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ ID: `{tx_id}`" if tx_id else "ငွေလွှဲပြေစာ ပူးတွဲပါရှိပါသည်"
+            
+            # Notify Buyer
             bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းချသူမှ အတည်ပြုပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
+            
+            # Notify Vendor (with or without slip photo)
             if vendor_notify:
-                bot.send_message(vendor_notify, f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် အော်ဒါကို စစ်ဆေး၍ အတည်ပြုပေးပါ။", parse_mode="Markdown")
+                vendor_caption = f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် ငွေလွှဲပြေစာကို သေချာစစ်ဆေး၍ အတည်ပြုပေးပါ။"
+                
+                if payment_slip_b64 and payment_method != "COD":
+                    try:
+                        # Decode the base64 string to bytes
+                        img_data = base64.b64decode(payment_slip_b64.split(',')[1] if ',' in payment_slip_b64 else payment_slip_b64)
+                        bot.send_photo(vendor_notify, photo=img_data, caption=vendor_caption, parse_mode="Markdown")
+                    except Exception as e:
+                        print("Error sending slip photo:", e)
+                        bot.send_message(vendor_notify, vendor_caption + "\n_(ငွေလွှဲပြေစာပုံ ပို့ဆောင်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်)_", parse_mode="Markdown")
+                else:
+                    bot.send_message(vendor_notify, vendor_caption, parse_mode="Markdown")
+                    
         except Exception as e: 
             print("Telegram Send Error:", e)
 
@@ -356,7 +376,7 @@ def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depen
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id).order_by(Order.created_at.desc()).all()
-    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method} for o in orders]
+    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "has_slip": bool(o.payment_slip)} for o in orders]
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -478,7 +498,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (UI/UX Enhanced with Table-Top Style)
+# ၆။ FRONTEND UI (UI/UX Enhanced with Table-Top Style & Secure Payment)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -764,7 +784,14 @@ async def serve_frontend():
             function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Bot Chat ထဲသို့ ပစ္စည်းပုံနှင့် ဈေးနှုန်းရေးပို့ပါ။ အခုပဲ App ကိုပိတ်ပြီး ပို့မလား?", (r) => { if(r) tg.close(); }); }
             function encodeImage(el, targetId) {
                 let f = el.files[0]; if(!f) return; let r = new FileReader();
-                r.onloadend = function() { document.getElementById(targetId).value = r.result; document.getElementById(targetId + '-preview').src = r.result; document.getElementById(targetId + '-preview').classList.remove('hidden'); }; 
+                r.onloadend = function() { 
+                    document.getElementById(targetId).value = r.result; 
+                    let preview = document.getElementById(targetId + '-preview');
+                    if(preview) {
+                        preview.src = r.result; 
+                        preview.classList.remove('hidden'); 
+                    }
+                }; 
                 r.readAsDataURL(f);
             }
             async function saveVendorProfile() {
@@ -883,7 +910,15 @@ async def serve_frontend():
                     <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 ${(!g.vendor_cod && (g.kpay_phone || g.wave_phone)) ? '' : 'hidden'} animate-fade-in">
                         <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="${g.kpay_qr || g.wave_qr || ''}" class="max-h-36 rounded-xl shadow-md border border-white ${(!g.kpay_qr && !g.wave_qr) ? 'hidden' : ''}"></div>
                         <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">${g.kpay_phone || g.wave_phone || ''}</p>
-                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
+                        
+                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm">
+                            <label class="block text-[11px] font-extrabold text-indigo-700 mb-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် မဖြစ်မနေလိုအပ်ပါသည်</label>
+                            <input type="file" accept="image/*" onchange="encodeImage(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full">
+                            <input type="hidden" id="slip_base64_${vid}">
+                            <img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-2">
+                        </div>
+
+                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) နောက်ဆုံး ၆ လုံး (ရွေးချယ်ရန်)..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
                     </div></div>`;
                     
                     html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5">
@@ -924,11 +959,30 @@ async def serve_frontend():
             async function checkoutVendor(vid) {
                 const st = document.getElementById('sel-state').value, dist = document.getElementById('sel-district').value, tsp = document.getElementById('sel-township').value, str = document.getElementById('input-street').value.trim(), ph = document.getElementById('input-phone').value.trim();
                 if(!st || !dist || !tsp || !str || !ph) return showToast("လိပ်စာနှင့် ဖုန်းနံပါတ် ပြည့်စုံစွာ ဖြည့်ပါ။");
-                const m = document.getElementById(`pay_method_${vid}`).value; let txId = "";
-                if(m !== "COD") { txId = document.getElementById(`tx_id_${vid}`).value.trim(); if(!txId) return showToast("Tx ID ထည့်ပါ။"); }
+                
+                const m = document.getElementById(`pay_method_${vid}`).value; 
+                let txId = "", slipBase64 = "";
+                
+                // Slip Verification validation
+                if(m !== "COD") { 
+                    txId = document.getElementById(`tx_id_${vid}`).value.trim(); 
+                    slipBase64 = document.getElementById(`slip_base64_${vid}`).value;
+                    if(!slipBase64) return showToast("⚠️ လုံခြုံရေးအရ ငွေလွှဲပြေစာ (Screenshot) ပုံတင်ပေးရန် လိုအပ်ပါသည်။"); 
+                }
+                
                 tg.MainButton.showProgress();
                 try {
-                    const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify({ transaction_id: txId, address: `${str}၊ ${tsp}၊ ${dist}၊ ${st}။`, phone: ph, payment_method: m, cart: cart.filter(i => i.vendor_id == vid).map(i=>({id:i.id, qty:i.qty})) }) });
+                    const payloadData = { 
+                        transaction_id: txId, 
+                        payment_slip: slipBase64, // Send base64 slip
+                        address: `${str}၊ ${tsp}၊ ${dist}၊ ${st}။`, 
+                        phone: ph, 
+                        payment_method: m, 
+                        cart: cart.filter(i => i.vendor_id == vid).map(i=>({id:i.id, qty:i.qty})) 
+                    };
+                    
+                    const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payloadData) });
+                    
                     if(res.ok) { 
                         cart = cart.filter(i => i.vendor_id != vid); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
                         if(cart.length === 0) showTab('history-tab', 'btn-history'); else renderGroupedCart(); 
@@ -984,7 +1038,9 @@ async def serve_frontend():
                     </div>
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
                         <div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div>
-                        <div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">'+o.tx+'</b>'}</div>
+                        <div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} 
+                        ${o.has_slip ? '<span class="bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded ml-1 text-[9px] font-bold">📸 ပြေစာပါသည်</span>' : ''}
+                        </div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
                     <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
