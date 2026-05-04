@@ -26,7 +26,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Table-Top UI Enhanced)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Secure Payment Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -58,8 +58,8 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
-    # Vendor Payment Profile Settings
-    accept_cod = Column(Boolean, default=False)
+    # Vendor Payment Profile Settings - Default COD True
+    accept_cod = Column(Boolean, default=True)
     kpay_phone = Column(String, default="")
     wave_phone = Column(String, default="")
     kpay_qr = Column(Text, default="") 
@@ -85,7 +85,7 @@ class Order(Base):
     quantity = Column(Integer, default=1) 
     payment_method = Column(String, default="QR") 
     transaction_id = Column(String, default="") 
-    payment_slip = Column(Text, default="") # New Column for Secure Slip Verification
+    payment_slip = Column(Text, default="") # New Column for Security
     address = Column(String) 
     status = Column(String, default="pending") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -294,8 +294,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         data = await req.json()
         cart_items = data.get('cart', []) 
         tx_id = data.get('transaction_id', '')
-        payment_slip_b64 = data.get('payment_slip', '') # Get Base64 Slip Image
-        payment_method = data.get('payment_method', 'QR') 
+        payment_slip_b64 = data.get('payment_slip', '') # Read Secure Slip
+        payment_method = data.get('payment_method', 'COD') # Default as COD 
         address = data.get('address', 'Unknown')
         phone = data.get('phone', '')
 
@@ -333,7 +333,7 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
         if phone and user.phone != phone: user.phone = phone
         db.commit()
 
-        # Send Notifications & Payment Slip
+        # Alert and Anti-Scam Verify Workflow
         try:
             items_str = "\n".join([f"- {n}" for n in ordered_names])
             pay_msg = "အိမ်ရောက်မှ ငွေချေစနစ် (COD)" if payment_method == "COD" else f"ငွေလွှဲပြေစာ ID: `{tx_id}`" if tx_id else "ငွေလွှဲပြေစာ ပူးတွဲပါရှိပါသည်"
@@ -341,21 +341,19 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             # Notify Buyer
             bot.send_message(user.telegram_id, f"🛒 **အော်ဒါ လက်ခံရရှိပါသည်**\n\n{items_str}\n\nစုစုပေါင်း: {total_amount:,.0f} Ks\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\n_ရောင်းချသူမှ အတည်ပြုပြီးပါက ဆက်လက်အကြောင်းကြားပေးပါမည်။_", parse_mode="Markdown")
             
-            # Notify Vendor (with or without slip photo)
+            # Notify Vendor
             if vendor_notify:
-                vendor_caption = f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် ငွေလွှဲပြေစာကို သေချာစစ်ဆေး၍ အတည်ပြုပေးပါ။"
+                vendor_caption = f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် ငွေလွှဲပြေစာနှင့် အချက်အလက်များကို သေချာစစ်ဆေး၍ အတည်ပြုပေးပါ။"
                 
+                # Forward Screenshot to Vendor Directly 
                 if payment_slip_b64 and payment_method != "COD":
                     try:
-                        # Decode the base64 string to bytes
                         img_data = base64.b64decode(payment_slip_b64.split(',')[1] if ',' in payment_slip_b64 else payment_slip_b64)
                         bot.send_photo(vendor_notify, photo=img_data, caption=vendor_caption, parse_mode="Markdown")
                     except Exception as e:
-                        print("Error sending slip photo:", e)
                         bot.send_message(vendor_notify, vendor_caption + "\n_(ငွေလွှဲပြေစာပုံ ပို့ဆောင်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်)_", parse_mode="Markdown")
                 else:
                     bot.send_message(vendor_notify, vendor_caption, parse_mode="Markdown")
-                    
         except Exception as e: 
             print("Telegram Send Error:", e)
 
@@ -498,7 +496,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (UI/UX Enhanced with Table-Top Style & Secure Payment)
+# ၆။ FRONTEND UI (UI/UX Enhanced with Secure Verification)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -674,7 +672,7 @@ async def serve_frontend():
                     <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏪 ရောင်းသူ Profile </h3>
                     <label class="flex items-center gap-3 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 mb-5 cursor-pointer transition hover:bg-indigo-50">
                         <input type="checkbox" id="prof-cod" class="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500">
-                        <span class="font-bold text-sm text-indigo-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD)</span>
+                        <span class="font-bold text-sm text-indigo-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD) ကို လက်ခံမည်</span>
                     </label>
                     <div class="space-y-5">
                         <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
@@ -734,7 +732,8 @@ async def serve_frontend():
                     const res = await apiFetch('/api/auth'); const data = await res.json();
                     currentUser = data.user;
                     
-                    document.getElementById('prof-cod').checked = currentUser.accept_cod;
+                    // Default to true for COD explicitly on UI side if not strictly set to false
+                    document.getElementById('prof-cod').checked = (currentUser.accept_cod !== undefined) ? currentUser.accept_cod : true;
                     document.getElementById('prof-kpay-ph').value = currentUser.kpay_phone || '';
                     document.getElementById('prof-wave-ph').value = currentUser.wave_phone || '';
 
@@ -875,7 +874,7 @@ async def serve_frontend():
                 }
             }
 
-            // CART & CHECKOUT
+            // CART & CHECKOUT (Secure Verification Enhanced)
             function renderGroupedCart() {
                 if(cart.length === 0) { document.getElementById('cart-empty-state').classList.remove('hidden'); document.getElementById('cart-content-wrapper').innerHTML = ''; return; }
                 document.getElementById('cart-empty-state').classList.add('hidden');
@@ -900,25 +899,30 @@ async def serve_frontend():
                         </div>
                     </div>`).join('');
                     
+                    // DEFAULT COD SETTING & SLIP UPLOAD
                     let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4">
                         <label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label>
                         <select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
-                    if(g.vendor_cod) payHtml += `<option value="COD">🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
+                    
+                    // Force COD if available or vendor selected
+                    if(g.vendor_cod || (!g.kpay_phone && !g.wave_phone)) payHtml += `<option value="COD" selected>🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
                     if(g.kpay_phone || g.kpay_qr) payHtml += `<option value="KPay">📲 KPay ဖြင့် ငွေလွှဲမည်</option>`;
                     if(g.wave_phone || g.wave_qr) payHtml += `<option value="Wave">📲 WavePay ဖြင့် ငွေလွှဲမည်</option>`;
                     payHtml += `</select>
-                    <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 ${(!g.vendor_cod && (g.kpay_phone || g.wave_phone)) ? '' : 'hidden'} animate-fade-in">
-                        <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="${g.kpay_qr || g.wave_qr || ''}" class="max-h-36 rounded-xl shadow-md border border-white ${(!g.kpay_qr && !g.wave_qr) ? 'hidden' : ''}"></div>
-                        <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">${g.kpay_phone || g.wave_phone || ''}</p>
+                    
+                    <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 hidden animate-fade-in">
+                        <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="" class="max-h-36 rounded-xl shadow-md border border-white hidden"></div>
+                        <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">-</p>
                         
-                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm">
-                            <label class="block text-[11px] font-extrabold text-indigo-700 mb-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် မဖြစ်မနေလိုအပ်ပါသည်</label>
-                            <input type="file" accept="image/*" onchange="encodeImage(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full">
+                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden">
+                            <div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                            <label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label>
+                            <input type="file" accept="image/*" id="slip_input_${vid}" onchange="encodeImage(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none">
                             <input type="hidden" id="slip_base64_${vid}">
-                            <img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-2">
+                            <img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2">
                         </div>
 
-                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) နောက်ဆုံး ၆ လုံး (ရွေးချယ်ရန်)..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
+                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ဂဏန်း ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
                     </div></div>`;
                     
                     html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5">
@@ -947,9 +951,16 @@ async def serve_frontend():
             function updateAddr(tId, sData) { document.getElementById(tId).innerHTML = getSelectOptions(sData, "ရွေးချယ်ပါ"); }
             function changeQty(idx, d) { if(d > 0 && cart[idx].qty >= cart[idx].stock) return showToast("Stock မလုံလောက်ပါ။"); cart[idx].qty += d; if(cart[idx].qty <= 0) cart.splice(idx, 1); updateCartBadge(); renderGroupedCart(); }
             function togglePayMethod(vid, gData) {
-                const m = document.getElementById(`pay_method_${vid}`).value; const box = document.getElementById(`qr_box_${vid}`);
-                if(m === "COD") { box.classList.add("hidden"); } else {
-                    box.classList.remove("hidden"); if(!gData) { let f = cart.find(i => i.vendor_id == vid); gData = {kpay_phone: f.vendor_kpay, wave_phone: f.vendor_wave, kpay_qr: f.kpay_qr, wave_qr: f.wave_qr}; }
+                const selectElement = document.getElementById(`pay_method_${vid}`);
+                if(!selectElement) return;
+                const m = selectElement.value; 
+                const box = document.getElementById(`qr_box_${vid}`);
+                
+                if(m === "COD") { 
+                    box.classList.add("hidden"); 
+                } else {
+                    box.classList.remove("hidden"); 
+                    if(!gData) { let f = cart.find(i => i.vendor_id == vid); gData = {kpay_phone: f.vendor_kpay, wave_phone: f.vendor_wave, kpay_qr: f.kpay_qr, wave_qr: f.wave_qr}; }
                     const img = document.getElementById(`qr_img_${vid}`), ph = document.getElementById(`qr_phone_${vid}`);
                     if(m === "KPay") { img.src = gData.kpay_qr || ""; img.classList.toggle("hidden", !gData.kpay_qr); ph.innerText = gData.kpay_phone || "-"; } 
                     else if(m === "Wave") { img.src = gData.wave_qr || ""; img.classList.toggle("hidden", !gData.wave_qr); ph.innerText = gData.wave_phone || "-"; }
@@ -963,18 +974,18 @@ async def serve_frontend():
                 const m = document.getElementById(`pay_method_${vid}`).value; 
                 let txId = "", slipBase64 = "";
                 
-                // Slip Verification validation
+                // Slip Verification logic enforced!
                 if(m !== "COD") { 
                     txId = document.getElementById(`tx_id_${vid}`).value.trim(); 
                     slipBase64 = document.getElementById(`slip_base64_${vid}`).value;
-                    if(!slipBase64) return showToast("⚠️ လုံခြုံရေးအရ ငွေလွှဲပြေစာ (Screenshot) ပုံတင်ပေးရန် လိုအပ်ပါသည်။"); 
+                    if(!slipBase64) return showToast("⚠️ လုံခြုံရေးအရ ငွေလွှဲပြေစာ (Screenshot) ပုံတင်ပေးရန် မဖြစ်မနေ လိုအပ်ပါသည်။"); 
                 }
                 
                 tg.MainButton.showProgress();
                 try {
                     const payloadData = { 
                         transaction_id: txId, 
-                        payment_slip: slipBase64, // Send base64 slip
+                        payment_slip: slipBase64, 
                         address: `${str}၊ ${tsp}၊ ${dist}၊ ${st}။`, 
                         phone: ph, 
                         payment_method: m, 
@@ -1039,7 +1050,7 @@ async def serve_frontend():
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
                         <div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div>
                         <div class="flex items-center gap-1.5"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} 
-                        ${o.has_slip ? '<span class="bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded ml-1 text-[9px] font-bold">📸 ပြေစာပါသည်</span>' : ''}
+                        ${o.has_slip ? '<span class="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded ml-1 text-[9px] font-bold border border-emerald-200">📸 ပြေစာပါသည်</span>' : ''}
                         </div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
@@ -1053,35 +1064,17 @@ async def serve_frontend():
                 </div>`}).join('');
             }
             
-            // Enhanced Double Confirmation functionality for strictly restricted vendor updates
             function updateOrderStatus(id, st, selectElement) {
-                const statusNames = {
-                    'pending': '⏳ စစ်ဆေးဆဲ',
-                    'approved': '📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)',
-                    'shipped': '🚚 ပို့ဆောင်လိုက်ပြီ',
-                    'delivered': '✅ ရောက်ရှိပါပြီ',
-                    'cancelled': '❌ ပယ်ဖျက်မည်'
-                };
-                
+                const statusNames = { 'pending': '⏳ စစ်ဆေးဆဲ', 'approved': '📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)', 'shipped': '🚚 ပို့ဆောင်လိုက်ပြီ', 'delivered': '✅ ရောက်ရှိပါပြီ', 'cancelled': '❌ ပယ်ဖျက်မည်' };
                 tg.showConfirm(`ဤအော်ဒါကို '${statusNames[st]}' အဖြစ် အတည်ပြုပြောင်းလဲမှာ သေချာပါသလား?`, async function(confirm) {
                     if(confirm) {
                         tg.MainButton.showProgress();
                         try {
                             const res = await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'});
-                            if(res.ok) {
-                                showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ");
-                            } else {
-                                showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။");
-                            }
-                        } catch(e) {
-                            showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။");
-                        }
-                        tg.MainButton.hideProgress();
-                        loadVendorOrders(); // Reload to reflect DB status
-                    } else {
-                        // User cancelled the prompt, revert the dropdown to its previous visual state
-                        loadVendorOrders();
-                    }
+                            if(res.ok) { showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); } else { showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။"); }
+                        } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); }
+                        tg.MainButton.hideProgress(); loadVendorOrders();
+                    } else { loadVendorOrders(); }
                 });
             }
             
@@ -1116,33 +1109,15 @@ async def serve_frontend():
                 document.getElementById('edit-product-modal').classList.add('active');
             }
 
-            function closeEditModal() {
-                document.getElementById('edit-product-modal').classList.remove('active');
-            }
+            function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
 
             async function saveEditProduct() {
-                const id = document.getElementById('edit-prod-id').value;
-                const name = document.getElementById('edit-prod-name').value.trim();
-                const price = document.getElementById('edit-prod-price').value;
-                const stock = document.getElementById('edit-prod-stock').value;
-
+                const id = document.getElementById('edit-prod-id').value, name = document.getElementById('edit-prod-name').value.trim(), price = document.getElementById('edit-prod-price').value, stock = document.getElementById('edit-prod-stock').value;
                 if(!name || !price || !stock) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
-
                 tg.MainButton.showProgress();
-                const res = await apiFetch(`/api/vendor/products/${id}`, {
-                    method: 'PUT',
-                    body: JSON.stringify({ name: name, price: price, stock: stock })
-                });
+                const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock }) });
                 tg.MainButton.hideProgress();
-
-                if(res.ok) {
-                    showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ");
-                    closeEditModal();
-                    loadVendorProducts();
-                    loadProducts(); 
-                } else {
-                    showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။");
-                }
+                if(res.ok) { showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ"); closeEditModal(); loadVendorProducts(); loadProducts(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
             }
 
             window.onload = initApp;
