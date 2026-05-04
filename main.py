@@ -7,7 +7,7 @@ import datetime
 import time
 import requests
 from urllib.parse import parse_qs
-from fastapi import FastAPI, Depends, HTTPException, Request, Header, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, Depends, HTTPException, Request, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime, Boolean, Text
@@ -25,7 +25,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Table-Top UI Enhanced & Live Chat)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Table-Top UI & Live Chat)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -57,6 +57,7 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
+    # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=False)
     kpay_phone = Column(String, default="")
     wave_phone = Column(String, default="")
@@ -97,13 +98,14 @@ class Notification(Base):
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+# [NEW] Live Chat Database Model
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    text = Column(Text)
+    sender_id = Column(String, index=True)
+    sender_name = Column(String)
+    message = Column(Text)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    user = relationship("User")
 
 Base.metadata.create_all(bind=engine)
 
@@ -113,19 +115,19 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-# ၃။ SECURE AUTHENTICATION
+# ၃။ SECURE AUTHENTICATION & WEBSOCKET MANAGER
 # ==========================================
-def verify_telegram_data(init_data_str: str, db: Session):
-    if not init_data_str: return None
+def get_current_user(x_telegram_init_data: str = Header(None), db: Session = Depends(get_db)):
+    if not x_telegram_init_data: raise HTTPException(status_code=401)
     try:
-        vals = {k: v[0] for k, v in parse_qs(init_data_str).items()}
+        vals = {k: v[0] for k, v in parse_qs(x_telegram_init_data).items()}
         hash_str = vals.pop('hash', None)
         data_check_str = "\n".join([f"{k}={v}" for k, v in sorted(vals.items())])
         secret_key = hmac.new("WebAppData".encode(), BOT_TOKEN.encode(), hashlib.sha256).digest()
         hmac_res = hmac.new(secret_key, data_check_str.encode(), hashlib.sha256).hexdigest()
-        if hmac_res != hash_str: return None
+        if hmac_res != hash_str: raise HTTPException(status_code=401)
         tg_user = json.loads(vals['user'])
-    except: return None
+    except: raise HTTPException(status_code=401)
     
     db_user = db.query(User).filter(User.telegram_id == str(tg_user['id'])).first()
     if not db_user:
@@ -136,22 +138,7 @@ def verify_telegram_data(init_data_str: str, db: Session):
         db.refresh(db_user)
     return db_user
 
-def get_current_user(x_telegram_init_data: str = Header(None), db: Session = Depends(get_db)):
-    user = verify_telegram_data(x_telegram_init_data, db)
-    if not user: raise HTTPException(status_code=401)
-    return user
-
-@app.get("/api/image/{file_id}")
-def get_telegram_image(file_id: str):
-    try:
-        file_info = bot.get_file(file_id)
-        res = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}")
-        return Response(content=res.content, media_type="image/jpeg")
-    except: raise HTTPException(status_code=404)
-
-# ==========================================
-# ၄။ WEBSOCKETS (LIVE CHAT MANAGER)
-# ==========================================
+# [NEW] WebSocket Connection Manager for Live Chat
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -166,50 +153,23 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         for connection in self.active_connections:
-            try: await connection.send_json(message)
-            except: pass
+            try:
+                await connection.send_json(message)
+            except:
+                pass
 
 chat_manager = ConnectionManager()
 
-@app.get("/api/chat/history")
-def get_chat_history(db: Session = Depends(get_db)):
-    msgs = db.query(ChatMessage).order_by(ChatMessage.id.desc()).limit(100).all()
-    msgs.reverse()
-    return [{"id": m.id, "sender_id": m.user.telegram_id, "sender_name": m.user.full_name, "text": m.text, "time": m.created_at.strftime("%H:%M")} for m in msgs]
-
-@app.websocket("/ws/chat")
-async def websocket_chat_endpoint(websocket: WebSocket, initData: str = Query(None)):
-    db = SessionLocal()
-    user = verify_telegram_data(initData, db)
-    if not user:
-        await websocket.close(code=1008)
-        db.close()
-        return
-
-    await chat_manager.connect(websocket)
+@app.get("/api/image/{file_id}")
+def get_telegram_image(file_id: str):
     try:
-        while True:
-            data = await websocket.receive_text()
-            if data.strip():
-                new_msg = ChatMessage(user_id=user.id, text=data.strip())
-                db.add(new_msg)
-                db.commit()
-                db.refresh(new_msg)
-                
-                await chat_manager.broadcast({
-                    "id": new_msg.id,
-                    "sender_id": user.telegram_id,
-                    "sender_name": user.full_name,
-                    "text": new_msg.text,
-                    "time": new_msg.created_at.strftime("%H:%M")
-                })
-    except WebSocketDisconnect:
-        chat_manager.disconnect(websocket)
-    finally:
-        db.close()
+        file_info = bot.get_file(file_id)
+        res = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}")
+        return Response(content=res.content, media_type="image/jpeg")
+    except: raise HTTPException(status_code=404)
 
 # ==========================================
-# ၅။ REST API ENDPOINTS
+# ၄။ API ENDPOINTS & WEB SOCKETS
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
@@ -224,24 +184,125 @@ def authenticate_user(user: User = Depends(get_current_user)):
         }
     }
 
+# [NEW] Live Chat Endpoints
+@app.websocket("/ws/chat")
+async def websocket_chat_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+    await chat_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Save message to database
+            new_msg = ChatMessage(sender_id=data['sender_id'], sender_name=data['sender_name'], message=data['text'])
+            db.add(new_msg)
+            db.commit()
+            
+            # Broadcast to all connected users
+            await chat_manager.broadcast({
+                "id": new_msg.id,
+                "sender_id": data['sender_id'],
+                "sender_name": data['sender_name'],
+                "text": data['text'],
+                "time": new_msg.created_at.strftime("%H:%M")
+            })
+    except WebSocketDisconnect:
+        chat_manager.disconnect(websocket)
+
+@app.get("/api/chat/history")
+def get_chat_history(db: Session = Depends(get_db)):
+    # နောက်ဆုံး ပို့ထားသော စာစောင် ၅၀ ကို ရယူမည်
+    messages = db.query(ChatMessage).order_by(ChatMessage.created_at.desc()).limit(50).all()
+    messages.reverse() # အဟောင်းမှ အသစ်သို့ ပြန်စီရန်
+    return [{"id": m.id, "sender_id": m.sender_id, "sender_name": m.sender_name, "text": m.message, "time": m.created_at.strftime("%H:%M")} for m in messages]
+
 @app.get("/api/locations")
 def get_locations():
     return {
-        "ရန်ကုန်တိုင်းဒေသကြီး": {"ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"], "ရန်ကုန်အရှေ့ပိုင်းခရိုင်": ["သင်္ဃန်းကျွန်း", "ရန်ကင်း", "တောင်ဥက္ကလာပ", "မြောက်ဥက္ကလာပ", "သာကေတ", "ဒေါပုံ", "တာမွေ", "ပုဇွန်တောင်", "ဗိုလ်တထောင်", "ဒဂုံမြို့သစ်(တောင်ပိုင်း)", "ဒဂုံမြို့သစ်(မြောက်ပိုင်း)", "ဒဂုံမြို့သစ်(အရှေ့ပိုင်း)", "ဒဂုံမြို့သစ်(ဆိပ်ကမ်း)"], "ရန်ကုန်မြောက်ပိုင်းခရိုင်": ["အင်းစိန်", "မင်္ဂလာဒုံ", "မှော်ဘီ", "လှည်းကူး", "တိုက်ကြီး", "ထန်းတပင်", "ရွှေပြည်သာ", "လှိုင်သာယာ"], "ရန်ကုန်တောင်ပိုင်းခရိုင်": ["သန်လျင်", "ကျောက်တန်း", "ခရမ်း", "သုံးခွ", "တွံတေး", "ကော့မှူး", "ကွမ်းခြံကုန်း", "ဒလ", "ဆိပ်ကြီးခနောင်တို"]},
-        "မန္တလေးတိုင်းဒေသကြီး": {"မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"], "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"], "ကျောက်ဆည်ခရိုင်": ["ကျောက်ဆည်", "စဉ့်ကိုင်", "မြစ်သား", "တံတားဦး"], "မိတ္ထီလာခရိုင်": ["မိတ္ထီလာ", "မလှိုင်", "သာစည်", "ဝမ်းတွင်း"], "မြင်းခြံခရိုင်": ["မြင်းခြံ", "တောင်သာ", "နွားထိုးကြီး", "ကျောက်ပန်းတောင်း", "ငါန်းဇွန်"], "ညောင်ဦးခရိုင်": ["ညောင်ဦး", "ကျောက်ပန်းတောင်း"], "ရမည်းသင်းခရိုင်": ["ရမည်းသင်း", "ပျော်ဘွယ်"]},
-        "နေပြည်တော်": {"ဥတ္တရခရိုင်": ["ဥတ္တရသီရိ", "ပုဗ္ဗသီရိ", "ဇေယျာသီရိ", "တပ်ကုန်း"], "ဒက္ခိဏခရိုင်": ["ဒက္ခိဏသီရိ", "ဇမ္ဗူသီရိ", "ပျဉ်းမနား", "လယ်ဝေး"]},
-        "ပဲခူးတိုင်းဒေသကြီး": {"ပဲခူးခရိုင်": ["ပဲခူး", "ဒိုက်ဦး", "ကဝ", "သနပ်ပင်", "ဝေါ", "ညောင်လေးပင်", "ကျောက်တံခါး", "ရွှေကျင်"], "တောင်ငူခရိုင်": ["တောင်ငူ", "ရေတာရှည်", "ကျောက်ကြီး", "ဖြူး", "အုတ်တွင်း", "ထန်းတပင်"], "ပြည်ခရိုင်": ["ပြည်", "ပေါက်ခေါင်း", "ပန်းတောင်း", "ပေါင်းတည်", "သဲကုန်း", "ရွှေတောင်"], "သာယာဝတီခရိုင်": ["သာယာဝတီ", "လက်ပံတန်း", "မင်းလှ", "မိုးညို", "အုတ်ဖို", "ကြို့ပင်ကောက်", "ဇီးကုန်း", "နတ်တလင်း"]},
-        "ဧရာဝတီတိုင်းဒေသကြီး": {"ပုသိမ်ခရိုင်": ["ပုသိမ်", "ကန်ကြီးထောင့်", "သာပေါင်း", "ငပုတော", "ကျုံပျော်", "ရေကြည်", "ကျောင်းကုန်း"], "ဟင်္သာတခရိုင်": ["ဟင်္သာတ", "ဇလွန်", "လေးမျက်နှာ", "မြန်အောင်", "ကြံခင်း", "အင်္ဂပူ"], "မြောင်းမြခရိုင်": ["မြောင်းမြ", "အိမ်မဲ", "ဝါးခယ်မ"], "မအူပင်ခရိုင်": ["မအူပင်", "ပန်းတနော်", "ညောင်တုန်း", "ဓနုဖြူ"], "ဖျာပုံခရိုင်": ["ဖျာပုံ", "ဘိုကလေး", "ကျိုက်လတ်", "ဒေးဒရဲ"], "လပွတ္တာခရိုင်": ["လပွတ္တာ", "မော်လမြိုင်ကျွန်း"]},
-        "မွန်ပြည်နယ်": {"မော်လမြိုင်ခရိုင်": ["မော်လမြိုင်", "ကျိုက်မရော", "ချောင်းဆုံ", "သံဖြူဇရပ်", "မုဒုံ", "ရေး"], "သထုံခရိုင်": ["သထုံ", "ပေါင်", "ကျိုက်ထို", "ဘီးလင်း"]},
-        "ရှမ်းပြည်နယ်": {"တောင်ကြီးခရိုင်": ["တောင်ကြီး", "ညောင်ရွှေ", "ဟိုပုံး", "ဆီဆိုင်", "ကလော", "ပင်းတယ", "ရွာငံ", "ရပ်စောက်"], "လားရှိုးခရိုင်": ["လားရှိုး", "သိန္နီ", "မိုင်းရယ်", "တန့်ယန်း"], "ကျိုင်းတုံခရိုင်": ["ကျိုင်းတုံ", "မိုင်းခတ်", "မိုင်းပြင်း", "မိုင်းယန်း"], "တာချီလိတ်ခရိုင်": ["တာချီလိတ်", "မိုင်းဖြတ်", "မိုင်းယောင်း"], "မူဆယ်ခရိုင်": ["မူဆယ်", "နမ့်ခမ်း", "ကွတ်ခိုင်"]},
-        "စစ်ကိုင်းတိုင်းဒေသကြီး": {"စစ်ကိုင်းခရိုင်": ["စစ်ကိုင်း", "မြင်းမူ", "မြောင်"], "မုံရွာခရိုင်": ["မုံရွာ", "အရာတော်", "ချောင်းဦး", "ဘုတလင်"], "ရွှေဘိုခရိုင်": ["ရွှေဘို", "ခင်ဦး", "ဝက်လက်", "ကန့်ဘလူ", "ကျွန်းလှ", "ရေဦး", "ဒီပဲယင်း", "တန့်ဆည်"], "ကလေးခရိုင်": ["ကလေး", "ကလေးဝ", "မင်းကင်း"]},
-        "မကွေးတိုင်းဒေသကြီး": {"မကွေးခရိုင်": ["မကွေး", "ရေနံချောင်း", "ချောက်", "တောင်တွင်းကြီး", "မြို့သစ်", "နတ်မောက်"], "မင်းဘူးခရိုင်": ["မင်းဘူး", "ပွင့်ဖြူ", "ငဖဲ", "စေတုတ္တရာ"], "ပခုက္ကူခရိုင်": ["ပခုက္ကူ", "ရေစကြို", "မြိုင်", "ပေါက်", "ဆိပ်ဖြူ"], "သရက်ခရိုင်": ["သရက်", "မင်းတုန်း", "မင်းလှ", "အောင်လံ", "ကံမ", "ဆင်ပေါင်ဝဲ"]},
-        "ကရင်ပြည်နယ်": {"ဘားအံခရိုင်": ["ဘားအံ", "လှိုင်းဘွဲ", "ဖာပွန်", "သံတောင်ကြီး"], "မြဝတီခရိုင်": ["မြဝတီ"], "ကော့ကရိတ်ခရိုင်": ["ကော့ကရိတ်", "ကြာအင်းဆိပ်ကြီး"]},
-        "ကယားပြည်နယ်": {"လွိုင်ကော်ခရိုင်": ["လွိုင်ကော်", "ဒီမော့ဆို", "ဖရူဆို", "ရှားတော"], "ဘောလခဲခရိုင်": ["ဘောလခဲ", "ဖားဆောင်း", "မယ်စဲ့"]},
-        "ကချင်ပြည်နယ်": {"မြစ်ကြီးနားခရိုင်": ["မြစ်ကြီးနား", "ဝိုင်းမော်", "အင်ဂျန်းယန်", "တနိုင်း", "ချီဖွေ", "ဆော့လော်"], "ဗန်းမော်ခရိုင်": ["ဗန်းမော်", "ရွှေကူ", "မိုးမောက်", "မန်စီ"], "မိုးညှင်းခရိုင်": ["မိုးညှင်း", "မိုးကောင်း", "ဖားကန့်"]},
-        "ချင်းပြည်နယ်": {"ဟားခါးခရိုင်": ["ဟားခါး", "ထန်တလန်"], "ဖလမ်းခရိုင်": ["ဖလမ်း", "တီတိန်", "တွန်းဇံ"], "မင်းတပ်ခရိုင်": ["မင်းတပ်", "မတူပီ", "ကန်ပက်လက်", "ပလက်ဝ"]},
-        "ရခိုင်ပြည်နယ်": {"စစ်တွေခရိုင်": ["စစ်တွေ", "ပုဏ္ဏားကျွန်း", "မြောက်ဦး", "ကျောက်တော်", "မင်းပြား", "မြေပုံ", "ပေါက်တော", "ရသေ့တောင်"], "မောင်တောခရိုင်": ["မောင်တော", "ဘူးသီးတောင်"], "ကျောက်ဖြူခရိုင်": ["ကျောက်ဖြူ", "မာန်အောင်", "ရမ်းဗြဲ", "အမ်း"], "သံတွဲခရိုင်": ["သံတွဲ", "တောင်ကုတ်", "ဂွ"]},
-        "တနင်္သာရီတိုင်းဒေသကြီး": {"ထားဝယ်ခရိုင်": ["ထားဝယ်", "လောင်းလုံး", "သရက်ချောင်း", "ရေဖြူ"], "မြိတ်ခရိုင်": ["မြိတ်", "ကျွန်းစု", "ပုလော", "တနင်္သာရီ"], "ကော့သောင်းခရိုင်": ["ကော့သောင်း", "ဘုတ်ပြင်း"]}
+        "ရန်ကုန်တိုင်းဒေသကြီး": {
+            "ရန်ကုန်အနောက်ပိုင်းခရိုင်": ["ကမာရွတ်", "လှိုင်", "စမ်းချောင်း", "အလုံ", "ကြည့်မြင်တိုင်", "ဒဂုံ", "ဗဟန်း", "ကျောက်တံတား", "ပန်းဘဲတန်း", "လသာ", "လမ်းမတော်"],
+            "ရန်ကုန်အရှေ့ပိုင်းခရိုင်": ["သင်္ဃန်းကျွန်း", "ရန်ကင်း", "တောင်ဥက္ကလာပ", "မြောက်ဥက္ကလာပ", "သာကေတ", "ဒေါပုံ", "တာမွေ", "ပုဇွန်တောင်", "ဗိုလ်တထောင်", "ဒဂုံမြို့သစ်(တောင်ပိုင်း)", "ဒဂုံမြို့သစ်(မြောက်ပိုင်း)", "ဒဂုံမြို့သစ်(အရှေ့ပိုင်း)", "ဒဂုံမြို့သစ်(ဆိပ်ကမ်း)"],
+            "ရန်ကုန်မြောက်ပိုင်းခရိုင်": ["အင်းစိန်", "မင်္ဂလာဒုံ", "မှော်ဘီ", "လှည်းကူး", "တိုက်ကြီး", "ထန်းတပင်", "ရွှေပြည်သာ", "လှိုင်သာယာ"],
+            "ရန်ကုန်တောင်ပိုင်းခရိုင်": ["သန်လျင်", "ကျောက်တန်း", "ခရမ်း", "သုံးခွ", "တွံတေး", "ကော့မှူး", "ကွမ်းခြံကုန်း", "ဒလ", "ဆိပ်ကြီးခနောင်တို"]
+        },
+        "မန္တလေးတိုင်းဒေသကြီး": {
+            "မန္တလေးခရိုင်": ["အောင်မြေသာစံ", "ချမ်းအေးသာစံ", "မဟာအောင်မြေ", "ချမ်းမြသာစည်", "ပြည်ကြီးတံခွန်", "အမရပူရ", "ပုသိမ်ကြီး"],
+            "ပြင်ဦးလွင်ခရိုင်": ["ပြင်ဦးလွင်", "မတ္တရာ", "စဉ့်ကူး", "မိုးကုတ်", "သပိတ်ကျင်း"],
+            "ကျောက်ဆည်ခရိုင်": ["ကျောက်ဆည်", "စဉ့်ကိုင်", "မြစ်သား", "တံတားဦး"],
+            "မိတ္ထီလာခရိုင်": ["မိတ္ထီလာ", "မလှိုင်", "သာစည်", "ဝမ်းတွင်း"],
+            "မြင်းခြံခရိုင်": ["မြင်းခြံ", "တောင်သာ", "နွားထိုးကြီး", "ကျောက်ပန်းတောင်း", "ငါန်းဇွန်"],
+            "ညောင်ဦးခရိုင်": ["ညောင်ဦး", "ကျောက်ပန်းတောင်း"],
+            "ရမည်းသင်းခရိုင်": ["ရမည်းသင်း", "ပျော်ဘွယ်"]
+        },
+        "နေပြည်တော်": {
+            "ဥတ္တရခရိုင်": ["ဥတ္တရသီရိ", "ပုဗ္ဗသီရိ", "ဇေယျာသီရိ", "တပ်ကုန်း"],
+            "ဒက္ခိဏခရိုင်": ["ဒက္ခိဏသီရိ", "ဇမ္ဗူသီရိ", "ပျဉ်းမနား", "လယ်ဝေး"]
+        },
+        "ပဲခူးတိုင်းဒေသကြီး": {
+            "ပဲခူးခရိုင်": ["ပဲခူး", "ဒိုက်ဦး", "ကဝ", "သနပ်ပင်", "ဝေါ", "ညောင်လေးပင်", "ကျောက်တံခါး", "ရွှေကျင်"],
+            "တောင်ငူခရိုင်": ["တောင်ငူ", "ရေတာရှည်", "ကျောက်ကြီး", "ဖြူး", "အုတ်တွင်း", "ထန်းတပင်"],
+            "ပြည်ခရိုင်": ["ပြည်", "ပေါက်ခေါင်း", "ပန်းတောင်း", "ပေါင်းတည်", "သဲကုန်း", "ရွှေတောင်"],
+            "သာယာဝတီခရိုင်": ["သာယာဝတီ", "လက်ပံတန်း", "မင်းလှ", "မိုးညို", "အုတ်ဖို", "ကြို့ပင်ကောက်", "ဇီးကုန်း", "နတ်တလင်း"]
+        },
+        "ဧရာဝတီတိုင်းဒေသကြီး": {
+            "ပုသိမ်ခရိုင်": ["ပုသိမ်", "ကန်ကြီးထောင့်", "သာပေါင်း", "ငပုတော", "ကျုံပျော်", "ရေကြည်", "ကျောင်းကုန်း"],
+            "ဟင်္သာတခရိုင်": ["ဟင်္သာတ", "ဇလွန်", "လေးမျက်နှာ", "မြန်အောင်", "ကြံခင်း", "အင်္ဂပူ"],
+            "မြောင်းမြခရိုင်": ["မြောင်းမြ", "အိမ်မဲ", "ဝါးခယ်မ"],
+            "မအူပင်ခရိုင်": ["မအူပင်", "ပန်းတနော်", "ညောင်တုန်း", "ဓနုဖြူ"],
+            "ဖျာပုံခရိုင်": ["ဖျာပုံ", "ဘိုကလေး", "ကျိုက်လတ်", "ဒေးဒရဲ"],
+            "လပွတ္တာခရိုင်": ["လပွတ္တာ", "မော်လမြိုင်ကျွန်း"]
+        },
+        "မွန်ပြည်နယ်": {
+            "မော်လမြိုင်ခရိုင်": ["မော်လမြိုင်", "ကျိုက်မရော", "ချောင်းဆုံ", "သံဖြူဇရပ်", "မုဒုံ", "ရေး"],
+            "သထုံခရိုင်": ["သထုံ", "ပေါင်", "ကျိုက်ထို", "ဘီးလင်း"]
+        },
+        "ရှမ်းပြည်နယ်": {
+            "တောင်ကြီးခရိုင်": ["တောင်ကြီး", "ညောင်ရွှေ", "ဟိုပုံး", "ဆီဆိုင်", "ကလော", "ပင်းတယ", "ရွာငံ", "ရပ်စောက်"],
+            "လားရှိုးခရိုင်": ["လားရှိုး", "သိန္နီ", "မိုင်းရယ်", "တန့်ယန်း"],
+            "ကျိုင်းတုံခရိုင်": ["ကျိုင်းတုံ", "မိုင်းခတ်", "မိုင်းပြင်း", "မိုင်းယန်း"],
+            "တာချီလိတ်ခရိုင်": ["တာချီလိတ်", "မိုင်းဖြတ်", "မိုင်းယောင်း"],
+            "မူဆယ်ခရိုင်": ["မူဆယ်", "နမ့်ခမ်း", "ကွတ်ခိုင်"]
+        },
+        "စစ်ကိုင်းတိုင်းဒေသကြီး": {
+            "စစ်ကိုင်းခရိုင်": ["စစ်ကိုင်း", "မြင်းမူ", "မြောင်"],
+            "မုံရွာခရိုင်": ["မုံရွာ", "အရာတော်", "ချောင်းဦး", "ဘုတလင်"],
+            "ရွှေဘိုခရိုင်": ["ရွှေဘို", "ခင်ဦး", "ဝက်လက်", "ကန့်ဘလူ", "ကျွန်းလှ", "ရေဦး", "ဒီပဲယင်း", "တန့်ဆည်"],
+            "ကလေးခရိုင်": ["ကလေး", "ကလေးဝ", "မင်းကင်း"]
+        },
+        "မကွေးတိုင်းဒေသကြီး": {
+            "မကွေးခရိုင်": ["မကွေး", "ရေနံချောင်း", "ချောက်", "တောင်တွင်းကြီး", "မြို့သစ်", "နတ်မောက်"],
+            "မင်းဘူးခရိုင်": ["မင်းဘူး", "ပွင့်ဖြူ", "ငဖဲ", "စေတုတ္တရာ"],
+            "ပခုက္ကူခရိုင်": ["ပခုက္ကူ", "ရေစကြို", "မြိုင်", "ပေါက်", "ဆိပ်ဖြူ"],
+            "သရက်ခရိုင်": ["သရက်", "မင်းတုန်း", "မင်းလှ", "အောင်လံ", "ကံမ", "ဆင်ပေါင်ဝဲ"]
+        },
+        "ကရင်ပြည်နယ်": {
+            "ဘားအံခရိုင်": ["ဘားအံ", "လှိုင်းဘွဲ", "ဖာပွန်", "သံတောင်ကြီး"],
+            "မြဝတီခရိုင်": ["မြဝတီ"],
+            "ကော့ကရိတ်ခရိုင်": ["ကော့ကရိတ်", "ကြာအင်းဆိပ်ကြီး"]
+        },
+        "ကယားပြည်နယ်": {
+            "လွိုင်ကော်ခရိုင်": ["လွိုင်ကော်", "ဒီမော့ဆို", "ဖရူဆို", "ရှားတော"],
+            "ဘောလခဲခရိုင်": ["ဘောလခဲ", "ဖားဆောင်း", "မယ်စဲ့"]
+        },
+        "ကချင်ပြည်နယ်": {
+            "မြစ်ကြီးနားခရိုင်": ["မြစ်ကြီးနား", "ဝိုင်းမော်", "အင်ဂျန်းယန်", "တနိုင်း", "ချီဖွေ", "ဆော့လော်"],
+            "ဗန်းမော်ခရိုင်": ["ဗန်းမော်", "ရွှေကူ", "မိုးမောက်", "မန်စီ"],
+            "မိုးညှင်းခရိုင်": ["မိုးညှင်း", "မိုးကောင်း", "ဖားကန့်"]
+        },
+        "ချင်းပြည်နယ်": {
+            "ဟားခါးခရိုင်": ["ဟားခါး", "ထန်တလန်"],
+            "ဖလမ်းခရိုင်": ["ဖလမ်း", "တီတိန်", "တွန်းဇံ"],
+            "မင်းတပ်ခရိုင်": ["မင်းတပ်", "မတူပီ", "ကန်ပက်လက်", "ပလက်ဝ"]
+        },
+        "ရခိုင်ပြည်နယ်": {
+            "စစ်တွေခရိုင်": ["စစ်တွေ", "ပုဏ္ဏားကျွန်း", "မြောက်ဦး", "ကျောက်တော်", "မင်းပြား", "မြေပုံ", "ပေါက်တော", "ရသေ့တောင်"],
+            "မောင်တောခရိုင်": ["မောင်တော", "ဘူးသီးတောင်"],
+            "ကျောက်ဖြူခရိုင်": ["ကျောက်ဖြူ", "မာန်အောင်", "ရမ်းဗြဲ", "အမ်း"],
+            "သံတွဲခရိုင်": ["သံတွဲ", "တောင်ကုတ်", "ဂွ"]
+        },
+        "တနင်္သာရီတိုင်းဒေသကြီး": {
+            "ထားဝယ်ခရိုင်": ["ထားဝယ်", "လောင်းလုံး", "သရက်ချောင်း", "ရေဖြူ"],
+            "မြိတ်ခရိုင်": ["မြိတ်", "ကျွန်းစု", "ပုလော", "တနင်္သာရီ"],
+            "ကော့သောင်းခရိုင်": ["ကော့သောင်း", "ဘုတ်ပြင်း"]
+        }
     }
 
 @app.get("/api/notifications")
@@ -414,7 +475,7 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
     return {"status": "success"}
 
 # ==========================================
-# ၆။ AI-POWERED CMS CHAT BOT
+# ၅။ AI-POWERED CMS CHAT BOT
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -463,7 +524,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၇။ FRONTEND UI (UI/UX Enhanced with Live Chat)
+# ၆။ FRONTEND UI (UI/UX Enhanced with Table-Top Style & Live Chat)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -513,7 +574,7 @@ async def serve_frontend():
             
             .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             
-            /* Modals & Layout adjustments */
+            /* Modals */
             .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
@@ -524,6 +585,7 @@ async def serve_frontend():
             #toast { visibility: hidden; min-width: 250px; background: rgba(15, 23, 42, 0.95); color: #fff; text-align: center; border-radius: 16px; padding: 14px 20px; position: fixed; z-index: 100; left: 50%; bottom: 85px; transform: translateX(-50%); font-size: 13px; font-weight: 600; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
             #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 3.5s; }
             
+            /* Tracker */
             .tracker-container { display: flex; justify-content: space-between; align-items: center; position: relative; margin: 15px 10px 10px 10px; }
             .tracker-line { position: absolute; top: 12px; left: 0; right: 0; height: 4px; background-color: #f1f5f9; border-radius: 2px; z-index: 1; }
             .tracker-progress { position: absolute; top: 12px; left: 0; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #3b82f6, #8b5cf6); z-index: 2; transition: width 0.5s ease-in-out; }
@@ -534,10 +596,9 @@ async def serve_frontend():
             .track-step.active .track-label { color: #4f46e5; }
             .status-cancelled { background-color: #fef2f2; color: #ef4444; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 800; border: 1px solid #fee2e2; }
             
-            /* Custom Scrollbar for Chat */
-            ::-webkit-scrollbar { width: 4px; height: 4px; }
-            ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-            ::-webkit-scrollbar-track { background: transparent; }
+            /* Scrollbar Hide for Chat */
+            .scrollbar-hide::-webkit-scrollbar { display: none; }
+            .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         </style>
     </head>
     <body class="pb-24">
@@ -556,20 +617,24 @@ async def serve_frontend():
             </div>
         </header>
 
-        <div class="glass-bottom-nav fixed bottom-0 w-full flex justify-around text-[10px] sm:text-[11px] font-bold z-50 shadow-[0_-8px_20px_rgba(0,0,0,0.04)] pb-safe">
+        <div class="glass-bottom-nav fixed bottom-0 w-full flex justify-between px-2 text-[10px] font-bold z-50 shadow-[0_-8px_20px_rgba(0,0,0,0.04)] pb-safe">
             <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn btn-press active flex-1 py-3 flex flex-col items-center gap-1.5">
                 <span class="text-[20px] leading-none">🏠</span><span>ဝယ်မည်</span>
             </button>
+            
             <button id="btn-chat" onclick="showTab('chat-tab', 'btn-chat')" class="tab-btn btn-press flex-1 py-3 flex flex-col items-center gap-1.5">
-                <span class="text-[20px] leading-none">💬</span><span>စကားပြော</span>
+                <span class="text-[20px] leading-none">💬</span><span>စကားပြောမည်</span>
             </button>
-            <button onclick="triggerSell()" class="tab-btn btn-press flex-1 py-3 flex flex-col items-center gap-1 relative">
-                <div class="absolute -top-5 gradient-bg text-white w-12 h-12 rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(99,102,241,0.3)] border-4 border-[#f8fafc] text-2xl pb-1 animate-float z-10">+</div>
-                <span class="mt-7 font-extrabold gradient-text">ရောင်းမည်</span>
+
+            <button onclick="triggerSell()" class="tab-btn btn-press flex-[1.2] py-3 flex flex-col items-center gap-1 relative">
+                <div class="absolute -top-5 gradient-bg text-white w-12 h-12 rounded-full flex items-center justify-center shadow-[0_8px_16px_rgba(99,102,241,0.3)] border-4 border-[#f8fafc] text-3xl pb-1 animate-float z-10">+</div>
+                <span class="mt-7 font-extrabold gradient-text text-[11px]">ရောင်းမည်</span>
             </button>
+            
             <button id="btn-history" onclick="showTab('history-tab', 'btn-history')" class="tab-btn btn-press flex-1 py-3 flex flex-col items-center gap-1.5">
                 <span class="text-[20px] leading-none">📋</span><span>မှတ်တမ်း</span>
             </button>
+            
             <button id="btn-orders" onclick="showTab('orders-tab', 'btn-orders')" class="tab-btn btn-press hidden flex-1 py-3 flex flex-col items-center gap-1.5">
                 <span class="text-[20px] leading-none">⚙️</span><span>စီမံရန်</span>
             </button>
@@ -619,18 +684,20 @@ async def serve_frontend():
             <div id="product-list" class="p-4 grid grid-cols-2 gap-4 pb-12"></div>
         </div>
 
-        <div id="chat-tab" class="tab-content hidden animate-fade-in relative flex flex-col h-[calc(100vh-140px)]">
-            <div class="p-4 bg-white shadow-sm border-b border-slate-100 shrink-0 z-10 sticky top-0">
-                <h2 class="font-extrabold text-slate-800 text-lg flex items-center gap-2">💬 Community Chat</h2>
-                <p class="text-[10px] font-bold text-slate-400 mt-1">ဝယ်သူများနှင့် ရောင်းသူများ အချင်းချင်း ဆွေးနွေးနိုင်ပါသည်</p>
+        <div id="chat-tab" class="tab-content hidden animate-fade-in flex-col" style="height: calc(100vh - 145px);">
+            <div class="p-4 bg-white shadow-[0_2px_10px_rgba(0,0,0,0.03)] z-10 shrink-0">
+                <h2 class="font-extrabold text-slate-800 text-xl flex items-center gap-2">💬 Community Lounge</h2>
+                <p class="text-[11px] text-slate-500 mt-1 font-bold">ဝယ်သူ၊ ရောင်းသူများ ရင်းနှီးစွာ ဆွေးနွေးနိုင်ပါသည်</p>
             </div>
             
-            <div id="chat-messages" class="flex-1 p-4 space-y-4 overflow-y-auto w-full"></div>
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 scrollbar-hide pb-4">
+                <div class="text-center text-xs text-slate-400 font-bold my-4 animate-fade-in">Lounge သို့ ချိတ်ဆက်နေပါသည်...</div>
+            </div>
             
-            <div class="fixed bottom-[65px] left-0 right-0 bg-white border-t border-slate-200 p-3 z-40 flex items-center gap-2 glass-bottom-nav">
-                <input type="text" id="chat-input" class="flex-1 p-3 bg-slate-100 border border-slate-200 rounded-full text-sm outline-none focus:ring-2 focus:ring-indigo-500 font-medium" placeholder="စာရိုက်ပါ..." onkeypress="if(event.key === 'Enter') sendChatMessage()">
-                <button onclick="sendChatMessage()" class="w-11 h-11 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg btn-press shrink-0">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 transform rotate-90" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+            <div class="p-3 shrink-0 bg-white border-t border-slate-100 flex gap-2 items-end z-20 shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
+                <textarea id="chat-input" rows="1" placeholder="စာရိုက်ပါ..." onkeypress="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage(); }" class="w-full bg-slate-50 border border-slate-200 rounded-2xl p-3.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 resize-none font-medium text-slate-700 max-h-[100px]"></textarea>
+                <button onclick="sendChatMessage()" class="btn-press gradient-bg text-white w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-md">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 ml-1"><path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" /></svg>
                 </button>
             </div>
         </div>
@@ -652,8 +719,8 @@ async def serve_frontend():
         <div id="orders-tab" class="tab-content hidden p-4 animate-fade-in">
             <div class="flex bg-slate-100 p-1.5 rounded-2xl mb-5 shadow-inner">
                 <button onclick="switchVendorTab('dash')" id="v-tab-dash" class="btn-press flex-1 bg-white shadow-sm py-2.5 rounded-xl text-sm font-extrabold text-indigo-600 transition-all">အော်ဒါများ</button>
-                <button onclick="switchVendorTab('prods')" id="v-tab-prods" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all hover:bg-slate-200/50">ပစ္စည်းများ</button>
-                <button onclick="switchVendorTab('profile')" id="v-tab-profile" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all hover:bg-slate-200/50">Profile</button>
+                <button onclick="switchVendorTab('prods')" id="v-tab-prods" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all">ပစ္စည်းများ</button>
+                <button onclick="switchVendorTab('profile')" id="v-tab-profile" class="btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all">Profile</button>
             </div>
             <div id="vendor-dash-view" class="animate-fade-up"><div id="order-list" class="space-y-4 pb-10"></div></div>
             <div id="vendor-prods-view" class="hidden animate-fade-up"><div id="vendor-product-list" class="space-y-3 pb-10"></div></div>
@@ -701,7 +768,10 @@ async def serve_frontend():
             let allProducts = [], currentCategory = 'All', cart = [];
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
+            
+            // Live Chat Variables
             let chatWs = null;
+            const chatMessagesBox = document.getElementById('chat-messages');
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -729,48 +799,62 @@ async def serve_frontend():
 
                     if (currentUser.role === 'vendor' || currentUser.role === 'admin') { document.getElementById('btn-orders').classList.remove('hidden'); }
                     loadProducts();
-                    initChatBox(); // Initialize Chat
+                    
+                    // Initialize Chat after authentication
+                    initChat();
                 } catch (e) { showToast("Authentication Failed"); }
             }
 
-            // ==========================================
-            // CHAT LOGIC (NEW)
-            // ==========================================
-            async function initChatBox() {
-                try {
-                    // Fetch Chat History
-                    const res = await apiFetch('/api/chat/history');
-                    const history = await res.json();
-                    const msgBox = document.getElementById('chat-messages');
-                    msgBox.innerHTML = history.map(renderMessageHTML).join('');
-                    scrollToChatBottom();
+            // 💬 NEW: LIVE CHAT SYSTEM
+            function initChat() {
+                // Fetch Chat History
+                apiFetch('/api/chat/history')
+                    .then(res => res.json())
+                    .then(data => {
+                        chatMessagesBox.innerHTML = '';
+                        if(data.length === 0) chatMessagesBox.innerHTML = '<div class="text-center text-xs text-slate-400 font-bold my-4">Lounge သို့ ကြိုဆိုပါသည်။ စကားစတင်ပြောဆိုနိုင်ပါပြီ။</div>';
+                        data.forEach(m => appendChatMessage(m));
+                    });
 
-                    // Connect WebSocket
-                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const wsUrl = protocol + '//' + window.location.host + '/ws/chat?initData=' + encodeURIComponent(initData);
-                    chatWs = new WebSocket(wsUrl);
-
-                    chatWs.onmessage = (event) => {
-                        const msg = JSON.parse(event.data);
-                        msgBox.insertAdjacentHTML('beforeend', renderMessageHTML(msg));
-                        scrollToChatBottom();
-                    };
-                    chatWs.onclose = () => { console.log("Chat Disconnected"); };
-                } catch(e) { console.error("Chat Init Error:", e); }
+                // Connect to WebSocket
+                const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+                const wsUrl = `${protocol}://${window.location.host}/ws/chat`;
+                chatWs = new WebSocket(wsUrl);
+                
+                chatWs.onmessage = function(event) {
+                    const msg = JSON.parse(event.data);
+                    appendChatMessage(msg);
+                };
+                
+                chatWs.onclose = function() {
+                    console.log("Chat Disconnected. Trying to reconnect...");
+                    setTimeout(initChat, 3000);
+                };
             }
 
-            function renderMessageHTML(m) {
-                const isMe = String(m.sender_id) === String(currentUser.id);
-                return `
-                <div class="flex ${isMe ? 'justify-end' : 'justify-start'} animate-fade-up w-full">
-                    <div class="max-w-[75%]">
-                        ${!isMe ? `<div class="text-[10px] text-slate-400 font-bold ml-2 mb-1">${m.sender_name}</div>` : ''}
-                        <div class="p-3 rounded-2xl ${isMe ? 'bg-indigo-600 text-white rounded-br-sm shadow-md' : 'bg-white border border-slate-100 shadow-sm text-slate-800 rounded-bl-sm'} text-[13px] font-medium break-words">
-                            ${m.text}
-                        </div>
-                        <div class="text-[9px] text-slate-400 mt-1 mx-1 ${isMe ? 'text-right' : ''}">${m.time}</div>
+            function appendChatMessage(msg) {
+                // Remove loading text if present
+                const loadTxt = chatMessagesBox.querySelector('.text-center');
+                if(loadTxt) loadTxt.remove();
+
+                const isMe = msg.sender_id === currentUser.id;
+                const bubble = document.createElement('div');
+                bubble.className = `flex flex-col ${isMe ? 'items-end' : 'items-start'} animate-fade-up`;
+                
+                const nameStr = isMe ? '' : `<span class="text-[10px] font-extrabold text-slate-400 ml-1.5 mb-1">${msg.sender_name}</span>`;
+                const bg = isMe ? 'bg-indigo-600 text-white rounded-[20px] rounded-tr-sm' : 'bg-white border border-slate-200 text-slate-800 rounded-[20px] rounded-tl-sm shadow-sm';
+                
+                bubble.innerHTML = `
+                    ${nameStr}
+                    <div class="${bg} px-4 py-2.5 max-w-[85%] text-[13px] leading-relaxed font-medium break-words">
+                        ${msg.text}
                     </div>
-                </div>`;
+                    <span class="text-[9px] text-slate-400 mt-1 font-bold mx-1.5">${msg.time}</span>
+                `;
+                chatMessagesBox.appendChild(bubble);
+                
+                // Auto scroll to bottom
+                chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
             }
 
             function sendChatMessage() {
@@ -778,15 +862,25 @@ async def serve_frontend():
                 const text = input.value.trim();
                 if(!text || !chatWs || chatWs.readyState !== WebSocket.OPEN) return;
                 
-                chatWs.send(text);
+                chatWs.send(JSON.stringify({
+                    sender_id: currentUser.id,
+                    sender_name: currentUser.name,
+                    text: text
+                }));
+                
                 input.value = '';
-                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+                input.focus();
+                
+                // Reset textarea height
+                input.style.height = 'auto';
             }
-
-            function scrollToChatBottom() {
-                const box = document.getElementById('chat-messages');
-                box.scrollTop = box.scrollHeight;
-            }
+            
+            // Auto-resize textarea
+            const chatInput = document.getElementById('chat-input');
+            chatInput.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = (this.scrollHeight) + 'px';
+            });
 
             // NOTIFICATIONS
             async function fetchNotifications() {
@@ -812,20 +906,23 @@ async def serve_frontend():
             }
             function showTab(tabId, btnId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); });
+                document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); el.style.display = ''; });
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
                 
                 const tab = document.getElementById(tabId);
                 tab.classList.remove('hidden');
+                
+                // Specific handling for chat tab to maintain flex layout
+                if (tabId === 'chat-tab') tab.style.display = 'flex';
+                
                 void tab.offsetWidth; 
                 tab.classList.add('animate-fade-in');
                 
                 if(btnId) document.getElementById(btnId).classList.add('active');
-                if(tabId === 'history-tab') loadBuyerOrders(); 
-                if(tabId === 'orders-tab') switchVendorTab('dash'); 
-                if(tabId === 'cart-tab') renderGroupedCart();
-                if(tabId === 'chat-tab') setTimeout(scrollToChatBottom, 100);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                if(tabId === 'history-tab') loadBuyerOrders(); if(tabId === 'orders-tab') switchVendorTab('dash'); if(tabId === 'cart-tab') renderGroupedCart();
+                
+                if (tabId === 'chat-tab') chatMessagesBox.scrollTop = chatMessagesBox.scrollHeight;
+                else window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
             // SELLER LOGIC
@@ -842,7 +939,7 @@ async def serve_frontend():
                 if(res.ok) { showToast("Profile သိမ်းဆည်းပြီးပါပြီ။"); currentUser.vendor_ready = true; document.getElementById('btn-orders').classList.remove('hidden'); }
             }
 
-            // SHOPPING
+            // SHOPPING (Table-top Style UI)
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}`); const data = await res.json(); allProducts = data.products;
                 if(query === "") {
@@ -862,7 +959,6 @@ async def serve_frontend():
                         <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
                             <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
                             <div class="absolute bottom-2.5 w-20 h-2 bg-slate-300/60 blur-[4px] rounded-full"></div>
-                            
                             <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
                         </div>
                         
@@ -870,13 +966,20 @@ async def serve_frontend():
                             <div class="mb-2">
                                 <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1 mb-1">🏪 ${p.vendor_name}</div>
                                 <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
+                                
                                 <div class="flex justify-between items-end mb-2">
                                     <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
                                     <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
                                 </div>
-                                <div class="text-[10px] font-medium text-slate-500 line-clamp-2 leading-relaxed bg-slate-50 p-2 rounded-xl border border-slate-100/60">${p.desc ? p.desc : 'အကြောင်းအရာဖော်ပြချက် မရှိပါ။'}</div>
+                                
+                                <div class="text-[10px] font-medium text-slate-500 line-clamp-2 leading-relaxed bg-slate-50 p-2 rounded-xl border border-slate-100/60">
+                                    ${p.desc ? p.desc : 'အကြောင်းအရာဖော်ပြချက် မရှိပါ။'}
+                                </div>
                             </div>
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-1 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
+                            
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press mt-1 w-full ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>
+                                🛒 ခြင်းထဲထည့်မည်
+                            </button>
                         </div>
                     </div>`
                 }).join('');
@@ -899,7 +1002,14 @@ async def serve_frontend():
                 const b = document.getElementById('cart-count'); 
                 let t = cart.reduce((s, i) => s + i.qty, 0); 
                 b.innerText = t; 
-                if(t > 0) { b.classList.remove('hidden'); b.classList.remove('animate-bounce-short'); void b.offsetWidth; b.classList.add('animate-bounce-short'); } else { b.classList.add('hidden'); }
+                if(t > 0) {
+                    b.classList.remove('hidden');
+                    b.classList.remove('animate-bounce-short');
+                    void b.offsetWidth;
+                    b.classList.add('animate-bounce-short');
+                } else {
+                    b.classList.add('hidden');
+                }
             }
 
             // CART & CHECKOUT
@@ -1075,6 +1185,7 @@ async def serve_frontend():
                 }).join('');
             }
 
+            // Edit Product Functions
             function openEditModal(prod) {
                 document.getElementById('edit-prod-id').value = prod.id;
                 document.getElementById('edit-prod-name').value = prod.name;
@@ -1083,7 +1194,9 @@ async def serve_frontend():
                 document.getElementById('edit-product-modal').classList.add('active');
             }
 
-            function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
+            function closeEditModal() {
+                document.getElementById('edit-product-modal').classList.remove('active');
+            }
 
             async function saveEditProduct() {
                 const id = document.getElementById('edit-prod-id').value;
@@ -1094,11 +1207,20 @@ async def serve_frontend():
                 if(!name || !price || !stock) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
 
                 tg.MainButton.showProgress();
-                const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock }) });
+                const res = await apiFetch(`/api/vendor/products/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ name: name, price: price, stock: stock })
+                });
                 tg.MainButton.hideProgress();
 
-                if(res.ok) { showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ"); closeEditModal(); loadVendorProducts(); loadProducts(); } 
-                else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
+                if(res.ok) {
+                    showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ");
+                    closeEditModal();
+                    loadVendorProducts();
+                    loadProducts(); 
+                } else {
+                    showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။");
+                }
             }
 
             window.onload = initApp;
