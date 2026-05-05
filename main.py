@@ -529,10 +529,42 @@ async def serve_frontend():
             @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
             .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
 
+            /* 5D Hologram & Floating Animation for Storefront Top Corner Icons */
+            @keyframes float5D {
+                0% { transform: translateY(0) perspective(400px) rotateX(0deg) rotateY(0deg); box-shadow: 0 15px 25px -5px rgba(0,0,0,0.3), 0 0 15px rgba(99,102,241,0.5), inset 0 2px 4px rgba(255,255,255,0.6); }
+                50% { transform: translateY(-8px) perspective(400px) rotateX(10deg) rotateY(-10deg); box-shadow: 0 25px 35px -5px rgba(0,0,0,0.5), 0 0 25px rgba(139,92,246,0.8), inset 0 2px 6px rgba(255,255,255,0.8); }
+                100% { transform: translateY(0) perspective(400px) rotateX(0deg) rotateY(0deg); box-shadow: 0 15px 25px -5px rgba(0,0,0,0.3), 0 0 15px rgba(99,102,241,0.5), inset 0 2px 4px rgba(255,255,255,0.6); }
+            }
+            .btn-5d-glass {
+                background: linear-gradient(135deg, rgba(255,255,255,0.3), rgba(255,255,255,0.1));
+                backdrop-filter: blur(20px);
+                -webkit-backdrop-filter: blur(20px);
+                border: 1px solid rgba(255,255,255,0.6);
+                border-bottom: 1px solid rgba(255,255,255,0.2);
+                border-right: 1px solid rgba(255,255,255,0.2);
+                animation: float5D 4s ease-in-out infinite;
+                color: #fff;
+                position: relative;
+            }
+            .btn-5d-glass svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4)); }
+            .btn-5d-glass:active { transform: scale(0.9); animation: none; }
+            
+            @keyframes pulse-glow {
+                0%, 100% { box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5); }
+                50% { box-shadow: 0 4px 20px rgba(255, 0, 127, 0.9), inset 0 2px 4px rgba(255,255,255,0.8); }
+            }
+            .badge-5d {
+                position: absolute; top: -6px; right: -6px;
+                background: linear-gradient(135deg, #ff007f, #7928ca);
+                color: white; border-radius: 50%;
+                padding: 2px 7px; font-size: 11px; font-weight: 900;
+                box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5);
+                border: 1px solid rgba(255,255,255,0.8);
+                animation: pulse-glow 2s infinite;
+            }
+
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
-            
-            /* High 5D Drop Shadow Effect for Product Cards */
             .shadow-5d { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3), 0 15px 25px -15px rgba(0, 0, 0, 0.15); }
             
             .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
@@ -542,14 +574,12 @@ async def serve_frontend():
             .tab-btn.active { color: #4f46e5; }
             .cat-chip { transition: all 0.2s ease; border: 1px solid #e2e8f0; }
             .cat-chip.active { background: linear-gradient(135deg, #2563eb, #8b5cf6); color: white; border-color: transparent; box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2); }
-            .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             
             .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(6px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
             .slide-up-modal.active { display: flex; animation: fadeIn 0.2s; }
             .slide-up-content { background: white; border-radius: 24px 24px 0 0; padding: 24px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-            @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             
             #storefront-view { position: fixed; inset: 0; background: #f8fafc; z-index: 55; display: none; overflow-y: auto; padding-bottom: 90px; }
             #storefront-view.active { display: block; animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
@@ -575,19 +605,9 @@ async def serve_frontend():
     </head>
     <body class="pb-24">
         
-        <header class="glass-header p-4 sticky top-0 z-40 flex justify-between items-center">
-            <span class="font-extrabold text-xl tracking-tight gradient-text">Digital<span class="text-slate-800">Mall</span></span>
-            <div class="flex items-center gap-3">
-                <button onclick="openNotiModal()" class="btn-press relative p-2.5 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
-                    <span id="noti-count" class="badge hidden">0</span>
-                </button>
-                <button onclick="showTab('cart-tab', 'btn-shop')" class="btn-press relative p-2.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                    <span id="cart-count" class="badge hidden">0</span>
-                </button>
-            </div>
-        </header>
+        <header class="glass-header p-4 sticky top-0 z-40 flex justify-center items-center">
+            <span class="font-extrabold text-2xl tracking-tight gradient-text">Digital<span class="text-slate-800">Mall</span></span>
+            </header>
 
         <div class="glass-bottom-nav fixed bottom-0 w-full flex justify-around text-[11px] font-bold z-50 shadow-[0_-8px_20px_rgba(0,0,0,0.04)] pb-safe">
             <button id="btn-shop" onclick="showTab('shop-tab', 'btn-shop')" class="tab-btn btn-press active flex-1 py-3 flex flex-col items-center gap-1.5">
@@ -609,7 +629,19 @@ async def serve_frontend():
             <div class="store-header-fixed bg-white">
                 <div id="storefront-cover-img" class="store-cover-container" style="background-image: url('https://via.placeholder.com/800x450');">
                     <div class="store-cover-overlay"></div>
-                    <button onclick="closeStore()" class="absolute top-4 left-4 text-white bg-white/20 hover:bg-white/40 backdrop-blur rounded-full w-10 h-10 flex items-center justify-center font-bold btn-press transition z-20 text-xl shadow-sm">&larr;</button>
+                    
+                    <button onclick="closeStore()" class="absolute top-4 left-4 text-white bg-white/20 hover:bg-white/40 backdrop-blur rounded-full w-10 h-10 flex items-center justify-center font-bold btn-press transition z-30 text-xl shadow-sm">&larr;</button>
+                    
+                    <div class="absolute top-4 right-4 z-40 flex gap-4">
+                        <button onclick="openNotiModal()" class="btn-press btn-5d-glass w-11 h-11 rounded-full flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+                            <span id="noti-count" class="badge-5d hidden">0</span>
+                        </button>
+                        <button onclick="openCartFromStore()" class="btn-press btn-5d-glass w-11 h-11 rounded-full flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                            <span id="cart-count" class="badge-5d hidden">0</span>
+                        </button>
+                    </div>
                     <div class="absolute bottom-4 left-5 right-5 text-white z-20">
                         <div class="flex items-center gap-3 mb-2">
                             <div class="w-12 h-12 bg-white rounded-xl shadow-lg border-2 border-white/30 flex items-center justify-center text-2xl shrink-0 text-black">🏪</div>
@@ -895,6 +927,13 @@ async def serve_frontend():
             }
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
             function closeNotiModal(e) { if(e.target === document.getElementById('noti-modal')) { document.getElementById('noti-modal').classList.remove('active'); fetchNotifications(); } }
+
+            // UX Function: Open Cart directly from Store View
+            function openCartFromStore() {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                closeStore();
+                setTimeout(() => { showTab('cart-tab', 'btn-shop'); }, 300);
+            }
 
             async function fetchLocationData() { 
                 try { 
