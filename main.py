@@ -17,6 +17,13 @@ import redis
 from telebot import TeleBot, types
 
 # ==========================================
+# မြန်မာစံတော်ချိန် တွက်ချက်ရန် Helper Function
+# ==========================================
+def get_mmt_now():
+    # UTC အချိန်ကို +6:30 ပေါင်းထည့်၍ မြန်မာစံတော်ချိန် ပြောင်းလဲခြင်း
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
+
+# ==========================================
 # ၁။ CONFIGURATION & SETUP
 # ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
@@ -99,7 +106,7 @@ class Order(Base):
     payment_slip = Column(Text, default="") 
     address = Column(String) 
     status = Column(String, default="pending") 
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=get_mmt_now) # Timezone Fixed
     product = relationship("Product")
     user = relationship("User")
 
@@ -109,7 +116,7 @@ class Notification(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     message = Column(String)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=get_mmt_now) # Timezone Fixed
 
 Base.metadata.create_all(bind=engine)
 
@@ -217,7 +224,8 @@ def get_locations():
 @app.get("/api/notifications")
 def get_notifications(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     notis = db.query(Notification).filter(Notification.user_id == user.id).order_by(Notification.created_at.desc()).limit(20).all()
-    return [{"id": n.id, "message": n.message, "is_read": n.is_read, "date": n.created_at.strftime("%d-%m-%Y %H:%M")} for n in notis]
+    # Formatting Timezone to 12-Hour AM/PM for Better UI Display
+    return [{"id": n.id, "message": n.message, "is_read": n.is_read, "date": n.created_at.strftime("%d-%m-%Y %I:%M %p")} for n in notis]
 
 @app.post("/api/notifications/read")
 def mark_notifications_read(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -379,7 +387,8 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     orders = db.query(Order).filter(Order.user_id == user.id).order_by(Order.created_at.desc()).all()
-    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%Y-%m-%d"), "pay": o.payment_method} for o in orders]
+    # Time formatting fixed here as well
+    return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%d-%m-%Y %I:%M %p"), "pay": o.payment_method} for o in orders]
 
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -457,6 +466,12 @@ def start(message):
     msg = """မင်္ဂလာပါရှင်။\n\n🛍️ **ဈေးဝယ်ရန်** အောက်ပါခလုတ်ကို နှိပ်ပါ။\n📦 **ရောင်းချရန်** ပစ္စည်းဓာတ်ပုံနှင့်တကွ အမည်၊ ဈေးနှုန်းတို့ကို ဤ Chat သို့ တိုက်ရိုက်ပေးပို့လိုက်ရုံဖြင့် AI မှ အလိုအလျောက် ရောင်းချပေးမည် ဖြစ်ပါသည်။"""
     bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
+# စာသက်သက်သာ ပို့ပါက အသိပေးရန် Feature အသစ်
+@bot.message_handler(content_types=['text'])
+def handle_text_messages(message):
+    if message.text != "/start":
+        bot.reply_to(message, "⚠️ **သတိပြုရန်**\n\nပစ္စည်းတင်ရောင်းချလိုပါက **ပစ္စည်းဓာတ်ပုံ** နှင့်တကွ အမည်၊ ဈေးနှုန်း အချက်အလက်များကို ပူးတွဲရေးသား၍ ပေးပို့ရန် လိုအပ်ပါသည်။", parse_mode="Markdown")
+
 @bot.message_handler(content_types=['photo'])
 def handle_cms_photo(message):
     db = SessionLocal()
@@ -529,39 +544,17 @@ async def serve_frontend():
             @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
             .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
 
-            /* 5D Hologram & Floating Animation for Storefront Top Corner Icons */
             @keyframes float5D {
                 0% { transform: translateY(0) perspective(400px) rotateX(0deg) rotateY(0deg); box-shadow: 0 15px 25px -5px rgba(0,0,0,0.3), 0 0 15px rgba(99,102,241,0.5), inset 0 2px 4px rgba(255,255,255,0.6); }
                 50% { transform: translateY(-8px) perspective(400px) rotateX(10deg) rotateY(-10deg); box-shadow: 0 25px 35px -5px rgba(0,0,0,0.5), 0 0 25px rgba(139,92,246,0.8), inset 0 2px 6px rgba(255,255,255,0.8); }
                 100% { transform: translateY(0) perspective(400px) rotateX(0deg) rotateY(0deg); box-shadow: 0 15px 25px -5px rgba(0,0,0,0.3), 0 0 15px rgba(99,102,241,0.5), inset 0 2px 4px rgba(255,255,255,0.6); }
             }
-            .btn-5d-glass {
-                background: linear-gradient(135deg, rgba(255,255,255,0.3), rgba(255,255,255,0.1));
-                backdrop-filter: blur(20px);
-                -webkit-backdrop-filter: blur(20px);
-                border: 1px solid rgba(255,255,255,0.6);
-                border-bottom: 1px solid rgba(255,255,255,0.2);
-                border-right: 1px solid rgba(255,255,255,0.2);
-                animation: float5D 4s ease-in-out infinite;
-                color: #fff;
-                position: relative;
-            }
+            .btn-5d-glass { background: linear-gradient(135deg, rgba(255,255,255,0.3), rgba(255,255,255,0.1)); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.6); border-bottom: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2); animation: float5D 4s ease-in-out infinite; color: #fff; position: relative; }
             .btn-5d-glass svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4)); }
             .btn-5d-glass:active { transform: scale(0.9); animation: none; }
             
-            @keyframes pulse-glow {
-                0%, 100% { box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5); }
-                50% { box-shadow: 0 4px 20px rgba(255, 0, 127, 0.9), inset 0 2px 4px rgba(255,255,255,0.8); }
-            }
-            .badge-5d {
-                position: absolute; top: -6px; right: -6px;
-                background: linear-gradient(135deg, #ff007f, #7928ca);
-                color: white; border-radius: 50%;
-                padding: 2px 7px; font-size: 11px; font-weight: 900;
-                box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5);
-                border: 1px solid rgba(255,255,255,0.8);
-                animation: pulse-glow 2s infinite;
-            }
+            @keyframes pulse-glow { 0%, 100% { box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5); } 50% { box-shadow: 0 4px 20px rgba(255, 0, 127, 0.9), inset 0 2px 4px rgba(255,255,255,0.8); } }
+            .badge-5d { position: absolute; top: -6px; right: -6px; background: linear-gradient(135deg, #ff007f, #7928ca); color: white; border-radius: 50%; padding: 2px 7px; font-size: 11px; font-weight: 900; box-shadow: 0 4px 10px rgba(255, 0, 127, 0.6), inset 0 2px 4px rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.8); animation: pulse-glow 2s infinite; }
 
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
@@ -850,15 +843,17 @@ async def serve_frontend():
         <script>
             const tg = window.Telegram.WebApp;
             const initData = tg.initData; 
-            let allProducts = [], currentCategory = 'All', cart = [];
+            
+            // Feature 2: Load Cart from LocalStorage
+            let cart = JSON.parse(localStorage.getItem('dmall_cart')) || [];
+            function saveCart() { localStorage.setItem('dmall_cart', JSON.stringify(cart)); }
+            
+            let allProducts = [], currentCategory = 'All';
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
             
-            // Advanced Location Filters
             let localStateFilter = "All";
             let localTownshipFilter = "All";
-
-            // Storefront variables
             let storeViewProducts = [];
             let storeCurrentCat = "All";
 
@@ -877,6 +872,7 @@ async def serve_frontend():
                 tg.expand(); tg.ready();
                 await fetchLocationData(); 
                 fetchNotifications();
+                updateCartBadge(); // Init Badge with saved cart data
                 
                 try {
                     const res = await apiFetch('/api/auth'); const data = await res.json();
@@ -928,7 +924,6 @@ async def serve_frontend():
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
             function closeNotiModal(e) { if(e.target === document.getElementById('noti-modal')) { document.getElementById('noti-modal').classList.remove('active'); fetchNotifications(); } }
 
-            // UX Function: Open Cart directly from Store View
             function openCartFromStore() {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 closeStore();
@@ -1008,7 +1003,6 @@ async def serve_frontend():
                 }
             }
 
-            // Advanced Location Filter Handlers
             function updateLocalTownships(stateVal) {
                 localStateFilter = stateVal;
                 localTownshipFilter = "All";
@@ -1065,7 +1059,6 @@ async def serve_frontend():
                 document.getElementById('product-list').innerHTML = allProducts.map((p, index) => generateProductCardHTML(p, index)).join('');
             }
 
-            // EDGE-TO-EDGE + 5D SHADOW Implementation
             function generateProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
@@ -1097,7 +1090,6 @@ async def serve_frontend():
                 </div>`
             }
 
-            // EDGE-TO-EDGE + 5D SHADOW for Storefront Products
             function generateStorefrontProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
@@ -1143,7 +1135,6 @@ async def serve_frontend():
                     storeViewProducts = data.products;
                     storeCurrentCat = "All";
                     
-                    // Render Menu Categories
                     let catsHTML = `<button onclick="filterStoreMenu('All')" id="scat-All" class="btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-transparent bg-indigo-600 text-white shadow-md">အားလုံး</button>`;
                     data.categories.forEach(c => catsHTML += `<button onclick="filterStoreMenu('${c}')" id="scat-${c.replace(/\s+/g, '-')}" class="btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-slate-200 bg-white text-slate-600 shadow-sm">${c}</button>`);
                     document.getElementById('storefront-categories').innerHTML = catsHTML;
@@ -1157,7 +1148,6 @@ async def serve_frontend():
             function filterStoreMenu(cat) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 storeCurrentCat = cat;
-                // Update UI Chips
                 document.querySelectorAll('#storefront-categories button').forEach(b => {
                     b.className = "btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-slate-200 bg-white text-slate-600 shadow-sm";
                 });
@@ -1177,6 +1167,7 @@ async def serve_frontend():
             function addToCart(prod) { 
                 let ex = cart.find(i => i.id === prod.id); 
                 if(ex) { if(ex.qty < prod.stock) ex.qty++; else return showToast("Stock မလုံလောက်ပါ။"); } else { cart.push({...prod, qty: 1}); }
+                saveCart(); // Added Local Storage persistence
                 updateCartBadge(); showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
             }
 
@@ -1249,7 +1240,7 @@ async def serve_frontend():
             }
 
             function updateAddr(tId, sData) { document.getElementById(tId).innerHTML = getSelectOptions(sData, "ရွေးချယ်ပါ"); }
-            function changeQty(idx, d) { if(d > 0 && cart[idx].qty >= cart[idx].stock) return showToast("Stock မလုံလောက်ပါ။"); cart[idx].qty += d; if(cart[idx].qty <= 0) cart.splice(idx, 1); updateCartBadge(); renderGroupedCart(); }
+            function changeQty(idx, d) { if(d > 0 && cart[idx].qty >= cart[idx].stock) return showToast("Stock မလုံလောက်ပါ။"); cart[idx].qty += d; if(cart[idx].qty <= 0) cart.splice(idx, 1); saveCart(); updateCartBadge(); renderGroupedCart(); }
             function togglePayMethod(vid, gData) {
                 const selectElement = document.getElementById(`pay_method_${vid}`); if(!selectElement) return;
                 const m = selectElement.value; const box = document.getElementById(`qr_box_${vid}`);
@@ -1292,7 +1283,7 @@ async def serve_frontend():
                     
                     const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payloadData) });
                     if(res.ok) { 
-                        cart = cart.filter(i => i.vendor_id != vid); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
+                        cart = cart.filter(i => i.vendor_id != vid); saveCart(); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
                         if(cart.length === 0) showTab('history-tab', 'btn-history'); else renderGroupedCart(); 
                     } else { 
                         let errMsg = "အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။";
@@ -1368,7 +1359,6 @@ async def serve_frontend():
                 const res = await apiFetch('/api/vendor/products'); const data = await res.json();
                 vendorProducts = data.products;
                 
-                // Populate datalist for category selection
                 let catOpts = "";
                 data.categories.forEach(c => { if(c) catOpts += `<option value="${c}">`; });
                 document.getElementById('vendor-categories-list').innerHTML = catOpts;
