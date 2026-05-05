@@ -7,7 +7,7 @@ import datetime
 import time
 import base64
 import requests
-from urllib.parse import parse_qs
+from urllib.parse import parse_qsl # Changed from parse_qs for better Telegram Auth Support
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -133,19 +133,31 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-# ၃။ SECURE AUTHENTICATION
+# ၃။ SECURE AUTHENTICATION (FIXED)
 # ==========================================
 def get_current_user(x_telegram_init_data: str = Header(None), db: Session = Depends(get_db)):
-    if not x_telegram_init_data: raise HTTPException(status_code=401)
+    if not x_telegram_init_data: 
+        raise HTTPException(status_code=401, detail="App ကို Telegram အတွင်းမှသာ ဖွင့်ပါ။")
+        
     try:
-        vals = {k: v[0] for k, v in parse_qs(x_telegram_init_data).items()}
-        hash_str = vals.pop('hash', None)
-        data_check_str = "\n".join([f"{k}={v}" for k, v in sorted(vals.items())])
+        parsed_data = dict(parse_qsl(x_telegram_init_data, keep_blank_values=True))
+        hash_str = parsed_data.pop('hash', None)
+        
+        if not hash_str:
+            raise HTTPException(status_code=401, detail="Invalid Authentication Data")
+            
+        data_check_str = "\n".join([f"{k}={v}" for k, v in sorted(parsed_data.items())])
         secret_key = hmac.new("WebAppData".encode(), BOT_TOKEN.encode(), hashlib.sha256).digest()
         hmac_res = hmac.new(secret_key, data_check_str.encode(), hashlib.sha256).hexdigest()
-        if hmac_res != hash_str: raise HTTPException(status_code=401)
-        tg_user = json.loads(vals['user'])
-    except: raise HTTPException(status_code=401)
+        
+        if hmac_res != hash_str: 
+            print("⚠️ Hash Mismatch! Please check if your BOT_TOKEN is correct.")
+            raise HTTPException(status_code=401, detail="Hash Validation Failed. Check BOT_TOKEN.")
+            
+        tg_user = json.loads(parsed_data['user'])
+    except Exception as e: 
+        print(f"Auth Error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed. Data formatting error.")
     
     db_user = db.query(User).filter(User.telegram_id == str(tg_user['id'])).first()
     if not db_user:
@@ -806,7 +818,14 @@ async def serve_frontend():
                 fetchNotifications();
                 
                 try {
-                    const res = await apiFetch('/api/auth'); const data = await res.json();
+                    const res = await apiFetch('/api/auth'); 
+                    const data = await res.json();
+                    
+                    // Error Handling (Browser vs Telegram Check)
+                    if (!res.ok) {
+                        throw new Error(data.detail || "Authentication Failed. App ကို Telegram ထဲမှသာ ဖွင့်ပါ။");
+                    }
+                    
                     currentUser = data.user;
                     
                     // Pre-fill Profile Info
@@ -834,7 +853,9 @@ async def serve_frontend():
 
                     if (currentUser.role === 'vendor' || currentUser.role === 'admin') { document.getElementById('btn-orders').classList.remove('hidden'); }
                     loadProducts();
-                } catch (e) { showToast("Authentication Failed"); }
+                } catch (e) { 
+                    showToast("⚠️ " + (e.message || "Authentication Failed"));
+                }
             }
 
             // NOTIFICATIONS
