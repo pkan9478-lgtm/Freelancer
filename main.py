@@ -26,7 +26,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Secure Payment Enhanced)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Address Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -64,8 +64,10 @@ class User(Base):
     store_state = Column(String, default="")
     store_district = Column(String, default="")
     store_township = Column(String, default="")
-    store_ward = Column(String, default="") # NEW: ရပ်ကွက် / ကျေးရွာ
-    store_street = Column(String, default="") # NEW: လမ်းအမည် / အထင်ကရနေရာ
+    
+    # NEW ADDRESS FIELDS
+    store_ward = Column(String, default="")
+    store_street = Column(String, default="")
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -111,10 +113,9 @@ class Notification(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Auto-Migration Database for Previous & New Columns (Prevent 500 Server Error)
+# Auto-Migration Database for All Columns
 try:
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
+    with engine.begin() as conn: conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
 except Exception: pass
 try:
     with engine.begin() as conn:
@@ -123,6 +124,9 @@ try:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_state TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_district TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_township TEXT DEFAULT ''"))
+except Exception: pass
+try: # New Fields Migration
+    with engine.begin() as conn:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))
 except Exception: pass
@@ -170,8 +174,10 @@ def get_telegram_image(file_id: str):
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
     has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr or user.wave_qr
+    # Vendor must have full address completed
     has_store = bool(user.store_name and user.store_state and user.store_ward and user.store_street)
     vendor_ready = has_payment and has_store
+    
     return {
         "user": {
             "id": user.telegram_id, "name": user.full_name, "role": user.role, 
@@ -221,7 +227,7 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     data = await req.json()
     if user.role == "buyer": user.role = "vendor"
     
-    # Update Store Info
+    # Update Store Info & Address
     if "store_name" in data: user.store_name = data.get("store_name", user.store_name)
     if "store_state" in data: user.store_state = data.get("store_state", user.store_state)
     if "store_district" in data: user.store_district = data.get("store_district", user.store_district)
@@ -244,7 +250,7 @@ def get_products(category: str = "All", search: str = "", state: str = "All", sk
     query = db.query(Product).join(User)
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
-    if state != "All": query = query.filter(User.store_state == state) # Local Filtering
+    if state != "All": query = query.filter(User.store_state == state)
 
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
     categories = [c[0] for c in db.query(Product.category).distinct().all()] 
@@ -355,7 +361,6 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
     except HTTPException: raise
     except Exception as e:
         db.rollback()
-        print(f"Checkout Error Log: {str(e)}") 
         raise HTTPException(status_code=500, detail="စနစ်ချို့ယွင်းမှုဖြစ်ပေါ်နေပါသည်။ ခေတ္တစောင့်ပါ။")
 
 @app.get("/api/buyer/orders")
@@ -418,13 +423,6 @@ async def edit_product(product_id: int, request: Request, user: User = Depends(g
     db.commit()
     return {"status": "success"}
 
-@app.put("/api/vendor/products/{product_id}/stock")
-async def update_product_stock(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    data = await request.json()
-    product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if product: product.stock = data.get("stock", product.stock); db.commit()
-    return {"status": "success"}
-
 @app.delete("/api/vendor/products/{product_id}")
 def delete_product(product_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
@@ -447,12 +445,11 @@ def handle_cms_photo(message):
     user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
     if not user: return db.close()
 
-    # Enforcement: Vendor must set both Location (Store info) and Payment before selling.
     has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr
-    has_store = bool(user.store_name and user.store_state and user.store_ward and user.store_street)
+    has_store = bool(user.store_name and user.store_state and user.store_ward)
     
     if not has_payment or not has_store:
-        bot.reply_to(message, "⚠️ **ရောင်းချရန် ဆိုင်အချက်အလက် (သို့) ငွေပေးချေမှုစနစ် ပြည့်စုံစွာ သတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ 'စီမံရန် -> Profile Setting' တွင် ဆိုင်အမည်၊ လိပ်စာအပြည့်အစုံ နှင့် KPay/COD စနစ်တို့ကို အရင်သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
+        bot.reply_to(message, "⚠️ **ရောင်းချရန် ဆိုင်အချက်အလက် (သို့) ငွေပေးချေမှုစနစ် မသတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ 'စီမံရန် -> Profile Setting' တွင် ဆိုင်အမည်၊ အသေးစိတ်လိပ်စာ နှင့် KPay/COD စနစ်တို့ကို အရင်သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
         return db.close()
 
     if user.role == "buyer":
@@ -485,7 +482,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (UI/UX Enhanced with Local Storefronts)
+# ၆။ FRONTEND UI (Enhanced Profile & Checkout fields)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -500,51 +497,33 @@ async def serve_frontend():
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Noto+Sans+Myanmar:wght@400;500;600;800&display=swap" rel="stylesheet">
         <title>Digital Mall Master</title>
         <style>
-            body { 
-                font-family: 'Inter', 'Noto Sans Myanmar', sans-serif; 
-                -webkit-tap-highlight-color: transparent; 
-                background-color: #f8fafc; 
-                overflow-x: hidden;
-            }
-            
-            /* Animations & Gradients */
+            body { font-family: 'Inter', 'Noto Sans Myanmar', sans-serif; -webkit-tap-highlight-color: transparent; background-color: #f8fafc; overflow-x: hidden; }
             @keyframes fadeUp { 0% { opacity: 0; transform: translateY(15px); } 100% { opacity: 1; transform: translateY(0); } }
             .animate-fade-up { animation: fadeUp 0.4s ease-out forwards; }
-            
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
             .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-            
             @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
             .animate-slide-in { animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-            
             @keyframes slideOutRight { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
             .animate-slide-out { animation: slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-            
             @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
             .animate-float { animation: float 3s ease-in-out infinite; }
-            
             @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
             .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
 
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
-            .store-gradient-bg { background: linear-gradient(135deg, #0f172a, #334155); } /* Store Header */
+            .store-gradient-bg { background: linear-gradient(135deg, #0f172a, #334155); }
             
-            /* Glassmorphism components */
             .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
             .glass-bottom-nav { background: rgba(255, 255, 255, 0.90); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-top: 1px solid rgba(226, 232, 240, 0.8); }
-            .glass-store-header { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
-            
-            /* Interactive elements */
             .btn-press:active { transform: scale(0.95); transition: transform 0.1s ease; }
             .tab-btn { color: #64748b; transition: all 0.2s ease; }
             .tab-btn.active { color: #4f46e5; }
             .cat-chip { transition: all 0.2s ease; border: 1px solid #e2e8f0; }
             .cat-chip.active { background: linear-gradient(135deg, #2563eb, #8b5cf6); color: white; border-color: transparent; box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2); }
-            
             .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             
-            /* Modals & Overlays */
             .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(6px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
@@ -552,7 +531,6 @@ async def serve_frontend():
             .slide-up-content { background: white; border-radius: 24px 24px 0 0; padding: 24px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             
-            /* Storefront Full Overlay */
             #storefront-view { position: fixed; inset: 0; background: #f8fafc; z-index: 55; display: none; overflow-y: auto; padding-bottom: 90px; }
             #storefront-view.active { display: block; animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             #storefront-view.closing { animation: slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
@@ -560,7 +538,6 @@ async def serve_frontend():
             #toast { visibility: hidden; min-width: 250px; background: rgba(15, 23, 42, 0.95); color: #fff; text-align: center; border-radius: 16px; padding: 14px 20px; position: fixed; z-index: 100; left: 50%; bottom: 85px; transform: translateX(-50%); font-size: 13px; font-weight: 600; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
             #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 3.5s; }
             
-            /* Tracker */
             .tracker-container { display: flex; justify-content: space-between; align-items: center; position: relative; margin: 15px 10px 10px 10px; }
             .tracker-line { position: absolute; top: 12px; left: 0; right: 0; height: 4px; background-color: #f1f5f9; border-radius: 2px; z-index: 1; }
             .tracker-progress { position: absolute; top: 12px; left: 0; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #3b82f6, #8b5cf6); z-index: 2; transition: width 0.5s ease-in-out; }
@@ -610,8 +587,10 @@ async def serve_frontend():
                 <div class="flex flex-col items-center text-center mt-4">
                     <div class="w-20 h-20 bg-white rounded-[24px] shadow-xl border-4 border-white/20 flex items-center justify-center text-4xl mb-3">🏪</div>
                     <h2 id="storefront-name" class="text-2xl font-black text-white mb-1.5 tracking-wide">ဆိုင်အမည်</h2>
-                    <div class="flex items-center gap-1.5 bg-white/10 backdrop-blur px-3 py-1.5 rounded-full border border-white/10 mt-1 max-w-full">
-                        <span class="text-sm shrink-0">📍</span> <span id="storefront-location" class="text-xs font-bold text-slate-100 line-clamp-2 leading-relaxed">တည်နေရာ</span>
+                    <div class="bg-white/10 backdrop-blur px-4 py-2 rounded-xl border border-white/10 max-w-[85%] mt-2">
+                        <div class="text-xs font-medium text-slate-200 flex items-start gap-1.5 leading-relaxed">
+                            <span class="text-sm mt-0.5">📍</span> <span id="storefront-location">တည်နေရာ</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -711,31 +690,31 @@ async def serve_frontend():
             <div id="vendor-profile-view" class="hidden animate-fade-up">
                 
                 <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-10 mb-5">
-                    <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏬 ဆိုင်အချက်အလက်</h3>
+                    <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏬 ဆိုင်အချက်အလက် (Address)</h3>
                     <div class="space-y-4">
                         <div>
                             <label class="block text-xs font-bold text-slate-500 mb-1.5">ဆိုင်အမည် (Store Name) <span class="text-red-500">*</span></label>
                             <input type="text" id="prof-store-name" placeholder="ဥပမာ - Royal Fashion" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">တည်နေရာ (State/Region) <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">တိုင်းဒေသကြီး/ပြည်နယ် <span class="text-red-500">*</span></label>
                             <select id="prof-store-state" onchange="updateAddr('prof-store-district', mmData[this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"></select>
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ခရိုင် (District) <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ခရိုင် <span class="text-red-500">*</span></label>
                             <select id="prof-store-district" onchange="updateAddr('prof-store-township', mmData[document.getElementById('prof-store-state').value][this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- ခရိုင် --</option></select>
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">မြို့နယ် (Township) <span class="text-red-500">*</span></label>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">မြို့နယ် <span class="text-red-500">*</span></label>
                             <select id="prof-store-township" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- မြို့နယ် --</option></select>
                         </div>
-                        <div class="pt-2 border-t border-slate-100">
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ရပ်ကွက် / ကျေးရွာ (Ward / Village) <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-ward" placeholder="ဥပမာ - မြို့မရပ်ကွက် သို့မဟုတ် အေးချမ်းသာရွာ" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ရပ်ကွက် / ကျေးရွာ <span class="text-red-500">*</span></label>
+                            <input type="text" id="prof-store-ward" placeholder="ဥပမာ - (က) ရပ်ကွက် သို့မဟုတ် ရွာမကျေးရွာ" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                         </div>
                         <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">လမ်းအမည် / အထင်ကရနေရာ (Street / Landmark) <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-street" placeholder="ဥပမာ - ဗိုလ်ချုပ်လမ်း၊ ဈေးအနီး" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">အိမ်အမှတ်၊ လမ်းအမည်၊ ပတ်ဝန်းကျင် <span class="text-red-500">*</span></label>
+                            <input type="text" id="prof-store-street" placeholder="ဥပမာ - အမှတ်(၁)၊ ဗိုလ်ချုပ်လမ်း၊ ဈေးအနီး..." class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
                         </div>
                     </div>
                 </div>
@@ -770,7 +749,7 @@ async def serve_frontend():
                 <button onclick="document.getElementById('setup-modal').classList.remove('active')" class="btn-press absolute top-4 right-4 text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
                 <div class="text-4xl mb-3 animate-bounce-short">🏪</div>
                 <h2 class="font-extrabold text-xl mb-2 text-slate-800">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
-                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်၏ **ဆိုင်အမည်၊ လိပ်စာအပြည့်အစုံ** နှင့် **ငွေချေစနစ် (KPay, Wave, COD)** များကို Profile တွင် အရင်သေချာစွာ သတ်မှတ်ပေးရန် လိုအပ်ပါသည်။</p>
+                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်၏ **ဆိုင်အမည်၊ လမ်း/ရပ်ကွက် အပါအဝင် အသေးစိတ်လိပ်စာ** နှင့် **ငွေချေစနစ် (KPay, Wave, COD)** များကို Profile တွင် အရင်သေချာစွာ သတ်မှတ်ပေးရန် လိုအပ်ပါသည်။</p>
                 <button onclick="document.getElementById('setup-modal').classList.remove('active'); showTab('orders-tab', 'btn-orders'); switchVendorTab('profile');" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-md text-sm">Profile Setting သို့သွားရန်</button>
             </div>
         </div>
@@ -805,15 +784,15 @@ async def serve_frontend():
                     const res = await apiFetch('/api/auth'); const data = await res.json();
                     currentUser = data.user;
                     
-                    // Pre-fill Profile Info
                     document.getElementById('prof-cod').checked = (currentUser.accept_cod !== undefined) ? currentUser.accept_cod : true;
                     document.getElementById('prof-kpay-ph').value = currentUser.kpay_phone || '';
                     document.getElementById('prof-wave-ph').value = currentUser.wave_phone || '';
                     document.getElementById('prof-store-name').value = currentUser.store_name || '';
+                    
+                    // PRE-FILL NEW FIELDS
                     document.getElementById('prof-store-ward').value = currentUser.store_ward || '';
                     document.getElementById('prof-store-street').value = currentUser.store_street || '';
                     
-                    // Safe populate location dropdowns
                     if(currentUser.store_state) {
                         document.getElementById('prof-store-state').value = currentUser.store_state;
                         updateAddr('prof-store-district', mmData[currentUser.store_state]);
@@ -833,7 +812,6 @@ async def serve_frontend():
                 } catch (e) { showToast("Authentication Failed"); }
             }
 
-            // NOTIFICATIONS
             async function fetchNotifications() {
                 try {
                     const res = await apiFetch('/api/notifications'); const notis = await res.json();
@@ -848,7 +826,6 @@ async def serve_frontend():
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
             function closeNotiModal(e) { if(e.target === document.getElementById('noti-modal')) { document.getElementById('noti-modal').classList.remove('active'); fetchNotifications(); } }
 
-            // CORE UI
             async function fetchLocationData() { 
                 try { 
                     const res = await fetch('/api/locations'); mmData = await res.json(); 
@@ -864,18 +841,13 @@ async def serve_frontend():
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); });
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                
                 const tab = document.getElementById(tabId);
-                tab.classList.remove('hidden');
-                void tab.offsetWidth; 
-                tab.classList.add('animate-fade-in');
-                
+                tab.classList.remove('hidden'); void tab.offsetWidth; tab.classList.add('animate-fade-in');
                 if(btnId) document.getElementById(btnId).classList.add('active');
                 if(tabId === 'history-tab') loadBuyerOrders(); if(tabId === 'orders-tab') switchVendorTab('dash'); if(tabId === 'cart-tab') renderGroupedCart();
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             }
 
-            // SELLER LOGIC
             function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Bot Chat ထဲသို့ ပစ္စည်းပုံနှင့် ဈေးနှုန်းရေးပို့ပါ။ အခုပဲ App ကိုပိတ်ပြီး ပို့မလား?", (r) => { if(r) tg.close(); }); }
             
             function encodeProfileQR(el, targetId) {
@@ -894,22 +866,16 @@ async def serve_frontend():
                 reader.onloadend = function(e) { 
                     let img = new Image();
                     img.onload = function() {
-                        let canvas = document.createElement('canvas');
-                        let ctx = canvas.getContext('2d');
-                        let maxW = 800; let maxH = 800; 
-                        let width = img.width; let height = img.height;
-                        if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } 
-                        else { if (height > maxH) { width *= maxH / height; height = maxH; } }
-                        canvas.width = width; canvas.height = height;
-                        ctx.drawImage(img, 0, 0, width, height);
+                        let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
+                        let maxW = 800; let maxH = 800; let width = img.width; let height = img.height;
+                        if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } else { if (height > maxH) { width *= maxH / height; height = maxH; } }
+                        canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
                         let dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
                         document.getElementById(targetId).value = dataUrl; 
                         let preview = document.getElementById(targetId + '-preview');
                         if(preview) { preview.src = dataUrl; preview.classList.remove('hidden'); }
-                    };
-                    img.src = e.target.result;
-                }; 
-                reader.readAsDataURL(file);
+                    }; img.src = e.target.result;
+                }; reader.readAsDataURL(file);
             }
             
             async function saveVendorProfile() {
@@ -917,11 +883,12 @@ async def serve_frontend():
                 const sState = document.getElementById('prof-store-state').value;
                 const sDist = document.getElementById('prof-store-district').value;
                 const sTsp = document.getElementById('prof-store-township').value;
+                // NEW FIELDS EXTRACTION
                 const sWard = document.getElementById('prof-store-ward').value.trim();
                 const sStreet = document.getElementById('prof-store-street').value.trim();
 
                 if(!sName || !sState || !sDist || !sTsp || !sWard || !sStreet) {
-                    return showToast("⚠️ ဆိုင်အမည်နှင့် တည်နေရာအသေးစိတ် အားလုံးကို ပြည့်စုံစွာ ဖြည့်ပါ။");
+                    return showToast("⚠️ ဆိုင်အမည်၊ လမ်း/ရပ်ကွက် နှင့် တည်နေရာ အားလုံးကို ပြည့်စုံစွာ ဖြည့်ပါ။");
                 }
 
                 tg.MainButton.showProgress();
@@ -939,80 +906,54 @@ async def serve_frontend():
                     currentUser.vendor_ready = true; 
                     currentUser.store_name = sName;
                     currentUser.store_state = sState;
-                    currentUser.store_ward = sWard;
-                    currentUser.store_street = sStreet;
                     document.getElementById('btn-orders').classList.remove('hidden'); 
                 }
             }
 
-            // SHOPPING (Table-top Style UI)
-            function filterLocalState(stateVal) {
-                localStateFilter = stateVal;
-                loadProducts(document.getElementById('search-box').value);
-            }
+            function filterLocalState(stateVal) { localStateFilter = stateVal; loadProducts(document.getElementById('search-box').value); }
 
             async function loadProducts(query = "") {
                 const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}&state=${localStateFilter}`); 
-                const data = await res.json(); 
-                allProducts = data.products;
+                const data = await res.json(); allProducts = data.products;
                 
-                // Populate Category Filter
                 if(query === "" && localStateFilter === "All") {
                     let catsHTML = `<button onclick="filterCategory('All')" class="btn-press cat-chip ${currentCategory==='All'?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">အားလုံး</button>`;
                     data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="btn-press cat-chip ${currentCategory===c?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">${c}</button>`);
                     document.getElementById('category-container').innerHTML = catsHTML;
                 }
 
-                // Populate Local State Dropdown dynamically from active sellers
-                let sf = document.getElementById('local-state-filter');
-                let currSfVal = sf.value;
+                let sf = document.getElementById('local-state-filter'); let currSfVal = sf.value;
                 let sfHtml = `<option value="All">နေရာအားလုံး</option>`;
                 data.states.forEach(s => { sfHtml += `<option value="${s}" ${currSfVal === s ? 'selected' : ''}>${s}</option>`; });
                 sf.innerHTML = sfHtml;
 
                 if(allProducts.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center py-12 text-slate-400 font-medium animate-fade-up">ပစ္စည်းရှာမတွေ့ပါ 🔍</div>`;
-                
-                document.getElementById('product-list').innerHTML = allProducts.map((p, index) => {
-                    return generateProductCardHTML(p, index);
-                }).join('');
+                document.getElementById('product-list').innerHTML = allProducts.map((p, index) => generateProductCardHTML(p, index)).join('');
             }
 
             function generateProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
-                const isOut = p.stock <= 0;
-                const animDelay = (index % 10) * 0.05; 
+                const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
                 const locBadge = p.vendor_state ? `<span class="bg-indigo-50 text-indigo-600 px-1.5 rounded text-[8px] font-bold border border-indigo-100 shrink-0">📍 ${p.vendor_state.replace('တိုင်းဒေသကြီး', '').replace('ပြည်နယ်', '')}</span>` : '';
                 
                 return `<div class="animate-fade-up bg-white rounded-[24px] shadow-[0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-xl ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
                     ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-sm">ကုန်နေပါသည်</div>' : ''}
-                    
                     <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
                         <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
-                        <div class="absolute bottom-2.5 w-20 h-2 bg-slate-300/60 blur-[4px] rounded-full"></div>
                         <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
                     </div>
-                    
                     <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20">
                         <div class="mb-2">
-                            <div class="flex justify-between items-center mb-1 gap-1">
-                                <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1">🏪 ${p.vendor_name}</div>
-                                ${locBadge}
-                            </div>
+                            <div class="flex justify-between items-center mb-1 gap-1"><div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1">🏪 ${p.vendor_name}</div>${locBadge}</div>
                             <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
-                            
                             <div class="flex justify-between items-end mb-2">
                                 <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
                                 <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
                             </div>
                         </div>
-                        
                         <div class="flex gap-1.5 mt-1">
-                            <button onclick='openStore(${p.vendor_id})' class="btn-press flex-1 bg-white border border-slate-200 text-slate-600 py-2.5 rounded-xl font-bold text-[10px] shadow-sm hover:bg-slate-50 transition-colors">
-                                🏪 ဆိုင်ပြခန်း
-                            </button>
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1.5] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs transition-colors" ${isOut?'disabled':''}>
-                                🛒 ဝယ်မည်
-                            </button>
+                            <button onclick='openStore(${p.vendor_id})' class="btn-press flex-1 bg-white border border-slate-200 text-slate-600 py-2.5 rounded-xl font-bold text-[10px] shadow-sm hover:bg-slate-50">🏪 ဆိုင်ပြခန်း</button>
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1.5] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs" ${isOut?'disabled':''}>🛒 ဝယ်မည်</button>
                         </div>
                     </div>
                 </div>`
@@ -1021,71 +962,35 @@ async def serve_frontend():
             function filterCategory(cat) { currentCategory = cat; loadProducts(document.getElementById('search-box').value); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
-            // FEATURE: Storefront Open Logic
             async function openStore(vendorId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 tg.MainButton.showProgress();
                 try {
-                    const res = await apiFetch(`/api/store/${vendorId}`);
-                    const data = await res.json();
-                    
+                    const res = await apiFetch(`/api/store/${vendorId}`); const data = await res.json();
                     document.getElementById('storefront-name').innerText = data.store.name;
-                    
-                    let fullAddress = "တည်နေရာ မသတ်မှတ်ရသေးပါ";
-                    if(data.store.state) {
-                        fullAddress = `${data.store.street}၊ ${data.store.ward}၊ ${data.store.township}၊ ${data.store.state}`;
-                    }
-                    document.getElementById('storefront-location').innerText = fullAddress;
+                    // UPDATED: Show full detailed address in Storefront
+                    const fullAddr = data.store.state ? `${data.store.street ? data.store.street+'၊ ':''}${data.store.ward ? data.store.ward+'၊ ':''}${data.store.township}၊ ${data.store.state}` : 'တည်နေရာ မသတ်မှတ်ရသေးပါ';
+                    document.getElementById('storefront-location').innerText = fullAddr;
                     document.getElementById('storefront-count').innerText = `${data.products.length} Items`;
-                    
-                    document.getElementById('storefront-products').innerHTML = data.products.map((p, index) => {
-                        return generateProductCardHTML(p, index);
-                    }).join('');
-
+                    document.getElementById('storefront-products').innerHTML = data.products.map((p, index) => generateProductCardHTML(p, index)).join('');
                     const storeView = document.getElementById('storefront-view');
-                    storeView.classList.remove('closing');
-                    storeView.classList.add('active');
-                    window.scrollTo({ top: 0 });
-                } catch(e) {
-                    showToast("ဆိုင်အချက်အလက် ယူ၍မရပါ။");
-                } finally {
-                    tg.MainButton.hideProgress();
-                }
+                    storeView.classList.remove('closing'); storeView.classList.add('active'); window.scrollTo({ top: 0 });
+                } catch(e) { showToast("ဆိုင်အချက်အလက် ယူ၍မရပါ။"); } finally { tg.MainButton.hideProgress(); }
             }
 
-            function closeStore() {
-                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                const storeView = document.getElementById('storefront-view');
-                storeView.classList.add('closing');
-                setTimeout(() => { storeView.classList.remove('active'); storeView.classList.remove('closing'); }, 300);
-            }
+            function closeStore() { if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); const storeView = document.getElementById('storefront-view'); storeView.classList.add('closing'); setTimeout(() => { storeView.classList.remove('active'); storeView.classList.remove('closing'); }, 300); }
             
             function addToCart(prod) { 
                 let ex = cart.find(i => i.id === prod.id); 
-                if(ex) { 
-                    if(ex.qty < prod.stock) ex.qty++; 
-                    else return showToast("Stock မလုံလောက်ပါ။"); 
-                } else {
-                    cart.push({...prod, qty: 1}); 
-                }
-                updateCartBadge(); 
-                showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
+                if(ex) { if(ex.qty < prod.stock) ex.qty++; else return showToast("Stock မလုံလောက်ပါ။"); } else { cart.push({...prod, qty: 1}); }
+                updateCartBadge(); showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
             }
             function updateCartBadge() { 
-                const b = document.getElementById('cart-count'); 
-                let t = cart.reduce((s, i) => s + i.qty, 0); 
+                const b = document.getElementById('cart-count'); let t = cart.reduce((s, i) => s + i.qty, 0); 
                 b.innerText = t; 
-                if(t > 0) {
-                    b.classList.remove('hidden');
-                    b.classList.remove('animate-bounce-short');
-                    void b.offsetWidth;
-                    b.classList.add('animate-bounce-short');
-                } else {
-                    b.classList.add('hidden');
-                }
+                if(t > 0) { b.classList.remove('hidden'); b.classList.remove('animate-bounce-short'); void b.offsetWidth; b.classList.add('animate-bounce-short'); } else { b.classList.add('hidden'); }
             }
 
-            // CART & CHECKOUT
             function renderGroupedCart() {
                 if(cart.length === 0) { document.getElementById('cart-empty-state').classList.remove('hidden'); document.getElementById('cart-content-wrapper').innerHTML = ''; return; }
                 document.getElementById('cart-empty-state').classList.add('hidden');
@@ -1099,79 +1004,56 @@ async def serve_frontend():
                     let g = vGroups[vid];
                     let itemsHtml = g.items.map(i => `
                     <div class="flex justify-between items-center mb-3 bg-white p-3 rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.02)] border border-slate-100">
-                        <div class="flex-1 pr-3">
-                            <div class="text-[13px] font-bold text-slate-800 line-clamp-1">${i.name}</div>
-                            <div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div>
-                        </div>
+                        <div class="flex-1 pr-3"><div class="text-[13px] font-bold text-slate-800 line-clamp-1">${i.name}</div><div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div></div>
                         <div class="flex items-center gap-3 bg-slate-50 rounded-xl shadow-inner px-2 py-1 border border-slate-100">
-                            <button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button>
-                            <span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span>
-                            <button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button>
+                            <button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button><span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span><button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button>
                         </div>
                     </div>`).join('');
                     
                     let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4">
                         <label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label>
                         <select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
-                    
                     if(g.vendor_cod || (!g.kpay_phone && !g.wave_phone)) payHtml += `<option value="COD" selected>🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
                     if(g.kpay_phone || g.kpay_qr) payHtml += `<option value="KPay">📲 KPay ဖြင့် ငွေလွှဲမည်</option>`;
                     if(g.wave_phone || g.wave_qr) payHtml += `<option value="Wave">📲 WavePay ဖြင့် ငွေလွှဲမည်</option>`;
                     payHtml += `</select>
-                    
                     <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 hidden animate-fade-in">
                         <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="" class="max-h-36 rounded-xl shadow-md border border-white hidden"></div>
                         <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">-</p>
-                        
-                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden">
-                            <div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
-                            <label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label>
-                            <input type="file" accept="image/*" id="slip_input_${vid}" onchange="compressAndEncodeSlip(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none">
-                            <input type="hidden" id="slip_base64_${vid}">
-                            <img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2">
-                        </div>
-
+                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden"><div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div><label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label><input type="file" accept="image/*" id="slip_input_${vid}" onchange="compressAndEncodeSlip(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none"><input type="hidden" id="slip_base64_${vid}"><img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2"></div>
                         <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ဂဏန်း ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
                     </div></div>`;
                     
                     html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5">
-                        <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50">
-                            <div>
-                                <h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3>
-                                <div class="text-[9px] font-bold text-slate-400 mt-1">📍 ${g.vendor_state || 'တည်နေရာ မသတ်မှတ်ရသေးပါ'}</div>
-                            </div>
-                            <span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span>
-                        </div>
+                        <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50"><div><h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3><div class="text-[9px] font-bold text-slate-400 mt-1">📍 ${g.vendor_state || 'တည်နေရာ မသတ်မှတ်ရသေးပါ'}</div></div><span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span></div>
                         ${itemsHtml}${payHtml}
                         <button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button>
                     </div>`;
                 }
+                
+                // NEW: ADDRESS INPUTS IN CHECKOUT
                 html += `<div class="animate-fade-up bg-slate-50 border border-slate-200 p-5 rounded-3xl mb-5 mt-8 shadow-inner">
-                    <h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> ပို့ဆောင်ရမည့် လိပ်စာ</h3>
+                    <h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> ပို့ဆောင်ရမည့် လိပ်စာအပြည့်အစုံ</h3>
                     <div class="space-y-3.5">
                         <select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></select>
                         <select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- ခရိုင် --</option></select>
                         <select id="sel-township" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- မြို့နယ် --</option></select>
-                        <input type="text" id="input-ward" placeholder="ရပ်ကွက် / ကျေးရွာ..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
+                        <input type="text" id="input-ward" placeholder="ရပ်ကွက် / ကျေးရွာ အမည်..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
                         <input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်၊ အထင်ကရနေရာ..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
                         <input type="tel" id="input-phone" placeholder="ဆက်သွယ်ရမည့် ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
                     </div>
                 </div>`;
                 document.getElementById('cart-content-wrapper').innerHTML = html; 
-                document.getElementById('sel-state').innerHTML = getSelectOptions(mmData, "တိုင်းဒေသကြီး");
+                document.getElementById('sel-state').innerHTML = getSelectOptions(mmData, "တိုင်းဒေသကြီး/ပြည်နယ်");
                 for(let vid in vGroups) togglePayMethod(vid, vGroups[vid]);
             }
+
             function updateAddr(tId, sData) { document.getElementById(tId).innerHTML = getSelectOptions(sData, "ရွေးချယ်ပါ"); }
             function changeQty(idx, d) { if(d > 0 && cart[idx].qty >= cart[idx].stock) return showToast("Stock မလုံလောက်ပါ။"); cart[idx].qty += d; if(cart[idx].qty <= 0) cart.splice(idx, 1); updateCartBadge(); renderGroupedCart(); }
             function togglePayMethod(vid, gData) {
-                const selectElement = document.getElementById(`pay_method_${vid}`);
-                if(!selectElement) return;
-                const m = selectElement.value; 
-                const box = document.getElementById(`qr_box_${vid}`);
-                
-                if(m === "COD") { 
-                    box.classList.add("hidden"); 
-                } else {
+                const selectElement = document.getElementById(`pay_method_${vid}`); if(!selectElement) return;
+                const m = selectElement.value; const box = document.getElementById(`qr_box_${vid}`);
+                if(m === "COD") { box.classList.add("hidden"); } else {
                     box.classList.remove("hidden"); 
                     if(!gData) { let f = cart.find(i => i.vendor_id == vid); gData = {kpay_phone: f.vendor_kpay, wave_phone: f.vendor_wave, kpay_qr: f.kpay_qr, wave_qr: f.wave_qr}; }
                     const img = document.getElementById(`qr_img_${vid}`), ph = document.getElementById(`qr_phone_${vid}`);
@@ -1181,8 +1063,15 @@ async def serve_frontend():
             }
 
             async function checkoutVendor(vid) {
-                const st = document.getElementById('sel-state').value, dist = document.getElementById('sel-district').value, tsp = document.getElementById('sel-township').value, ward = document.getElementById('input-ward').value.trim(), str = document.getElementById('input-street').value.trim(), ph = document.getElementById('input-phone').value.trim();
-                if(!st || !dist || !tsp || !ward || !str || !ph) return showToast("လိပ်စာအပြည့်အစုံနှင့် ဖုန်းနံပါတ် ပြည့်စုံစွာ ဖြည့်ပါ။");
+                const st = document.getElementById('sel-state').value, 
+                      dist = document.getElementById('sel-district').value, 
+                      tsp = document.getElementById('sel-township').value, 
+                      ward = document.getElementById('input-ward').value.trim(),
+                      str = document.getElementById('input-street').value.trim(), 
+                      ph = document.getElementById('input-phone').value.trim();
+                
+                // Address Validation Logic
+                if(!st || !dist || !tsp || !ward || !str || !ph) return showToast("ရပ်ကွက်နှင့် လမ်းနာမည် အပါအဝင် လိပ်စာအပြည့်အစုံကို သေချာဖြည့်ပါ။");
                 
                 const m = document.getElementById(`pay_method_${vid}`).value; 
                 let txId = "", slipBase64 = "";
@@ -1195,17 +1084,15 @@ async def serve_frontend():
                 
                 tg.MainButton.showProgress();
                 try {
+                    // Compose Full Address
+                    const fullAddress = `${str}၊ ${ward}၊ ${tsp}၊ ${dist}၊ ${st}။`;
                     const payloadData = { 
-                        transaction_id: txId, 
-                        payment_slip: slipBase64, 
-                        address: `${str}၊ ${ward}၊ ${tsp}၊ ${dist}၊ ${st}။`, 
-                        phone: ph, 
-                        payment_method: m, 
+                        transaction_id: txId, payment_slip: slipBase64, 
+                        address: fullAddress, phone: ph, payment_method: m, 
                         cart: cart.filter(i => i.vendor_id == vid).map(i=>({id:i.id, qty:i.qty})) 
                     };
                     
                     const res = await apiFetch(`/api/checkout`, { method: 'POST', body: JSON.stringify(payloadData) });
-                    
                     if(res.ok) { 
                         cart = cart.filter(i => i.vendor_id != vid); updateCartBadge(); showToast("✅ အော်ဒါတင်ခြင်း အောင်မြင်ပါသည်။"); 
                         if(cart.length === 0) showTab('history-tab', 'btn-history'); else renderGroupedCart(); 
@@ -1218,7 +1105,6 @@ async def serve_frontend():
                 finally { tg.MainButton.hideProgress(); }
             }
 
-            // ORDER TRACKER
             async function loadBuyerOrders() {
                 const res = await apiFetch('/api/buyer/orders'); const orders = await res.json();
                 const trackIndex = { 'pending': 1, 'approved': 2, 'shipped': 3, 'delivered': 4, 'cancelled': 0 };
@@ -1227,20 +1113,13 @@ async def serve_frontend():
                     let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-4"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">ထုပ်ပိုးဆဲ</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
                     const animDelay = (index % 10) * 0.1;
                     return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${animDelay}s">
-                        <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3">
-                            <span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span>
-                            <span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span>
-                        </div>
+                        <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3"><span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span><span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span></div>
                         ${trackerHtml}
-                        <div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl">
-                            <span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span>
-                            <span>📅 ${o.date}</span>
-                        </div>
+                        <div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl"><span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span><span>📅 ${o.date}</span></div>
                     </div>`;
                 }).join('');
             }
             
-            // VENDOR DASHBOARD
             function switchVendorTab(tab) {
                 ['dash', 'prods', 'profile'].forEach(t => { 
                     const btn = document.getElementById(`v-tab-${t}`);
@@ -1254,22 +1133,12 @@ async def serve_frontend():
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
                     const animDelay = (index % 10) * 0.1;
-                    
-                    let slipBtnHtml = '';
-                    if(o.slip_img) {
-                        slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
-                    }
-
+                    let slipBtnHtml = ''; if(o.slip_img) slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
                     return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s">
-                    <div class="flex justify-between items-start mb-3">
-                        <div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div>
-                        <div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div>
-                    </div>
+                    <div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div>
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
                         <div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div>
-                        <div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} 
-                        ${slipBtnHtml}
-                        </div>
+                        <div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} ${slipBtnHtml}</div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
                     <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
@@ -1282,24 +1151,15 @@ async def serve_frontend():
                 </div>`}).join('');
             }
             
-            function viewSlip(imgData) {
-                document.getElementById('slip-viewer-img').src = imgData;
-                document.getElementById('slip-viewer-modal').classList.add('active');
-            }
-            function closeSlipModal() {
-                document.getElementById('slip-viewer-modal').classList.remove('active');
-                setTimeout(() => { document.getElementById('slip-viewer-img').src = ''; }, 300);
-            }
+            function viewSlip(imgData) { document.getElementById('slip-viewer-img').src = imgData; document.getElementById('slip-viewer-modal').classList.add('active'); }
+            function closeSlipModal() { document.getElementById('slip-viewer-modal').classList.remove('active'); setTimeout(() => { document.getElementById('slip-viewer-img').src = ''; }, 300); }
 
             function updateOrderStatus(id, st, selectElement) {
                 const statusNames = { 'pending': '⏳ စစ်ဆေးဆဲ', 'approved': '📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)', 'shipped': '🚚 ပို့ဆောင်လိုက်ပြီ', 'delivered': '✅ ရောက်ရှိပါပြီ', 'cancelled': '❌ ပယ်ဖျက်မည်' };
                 tg.showConfirm(`ဤအော်ဒါကို '${statusNames[st]}' အဖြစ် အတည်ပြုပြောင်းလဲမှာ သေချာပါသလား?`, async function(confirm) {
                     if(confirm) {
                         tg.MainButton.showProgress();
-                        try {
-                            const res = await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'});
-                            if(res.ok) { showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); } else { showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။"); }
-                        } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); }
+                        try { const res = await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); if(res.ok) { showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); } else { showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။"); } } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); }
                         tg.MainButton.hideProgress(); loadVendorOrders();
                     } else { loadVendorOrders(); }
                 });
@@ -1309,40 +1169,24 @@ async def serve_frontend():
             async function loadVendorProducts() {
                 const res = await apiFetch('/api/vendor/products'); vendorProducts = await res.json();
                 document.getElementById('vendor-product-list').innerHTML = vendorProducts.map((p, index) => {
-                    const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300';
-                    const animDelay = (index % 10) * 0.1;
-                    return `
-                    <div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${animDelay}s">
+                    const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; const animDelay = (index % 10) * 0.1;
+                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${animDelay}s">
                         <img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50">
-                        <div class="flex-1">
-                            <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div>
-                            <div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div>
-                            <div class="text-[10px] text-slate-500 font-extrabold bg-slate-100 inline-flex px-2 py-0.5 rounded-md items-center gap-1 border border-slate-200">📦 Stock: ${p.stock}</div>
-                        </div>
-                        <div class="flex flex-col gap-2">
-                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button>
-                            <button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button>
-                        </div>
+                        <div class="flex-1"><div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div><div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div><div class="text-[10px] text-slate-500 font-extrabold bg-slate-100 inline-flex px-2 py-0.5 rounded-md items-center gap-1 border border-slate-200">📦 Stock: ${p.stock}</div></div>
+                        <div class="flex flex-col gap-2"><button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button><button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button></div>
                     </div>`
                 }).join('');
             }
 
             function openEditModal(prod) {
-                document.getElementById('edit-prod-id').value = prod.id;
-                document.getElementById('edit-prod-name').value = prod.name;
-                document.getElementById('edit-prod-price').value = prod.price;
-                document.getElementById('edit-prod-stock').value = prod.stock;
-                document.getElementById('edit-product-modal').classList.add('active');
+                document.getElementById('edit-prod-id').value = prod.id; document.getElementById('edit-prod-name').value = prod.name; document.getElementById('edit-prod-price').value = prod.price; document.getElementById('edit-prod-stock').value = prod.stock; document.getElementById('edit-product-modal').classList.add('active');
             }
-
             function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
 
             async function saveEditProduct() {
                 const id = document.getElementById('edit-prod-id').value, name = document.getElementById('edit-prod-name').value.trim(), price = document.getElementById('edit-prod-price').value, stock = document.getElementById('edit-prod-stock').value;
                 if(!name || !price || !stock) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
-                tg.MainButton.showProgress();
-                const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock }) });
-                tg.MainButton.hideProgress();
+                tg.MainButton.showProgress(); const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock }) }); tg.MainButton.hideProgress();
                 if(res.ok) { showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ"); closeEditModal(); loadVendorProducts(); loadProducts(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
             }
 
