@@ -248,11 +248,15 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     return {"status": "success"}
 
 @app.get("/api/products")
-def get_products(category: str = "All", search: str = "", state: str = "All", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
+def get_products(category: str = "All", search: str = "", state: str = "All", township: str = "All", ward: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
     query = db.query(Product).join(User)
+    
+    # Apply Filters
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
     if state != "All": query = query.filter(User.store_state == state)
+    if township != "All" and township != "": query = query.filter(User.store_township == township)
+    if ward: query = query.filter(User.store_ward.ilike(f"%{ward}%"))
 
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
     categories = [c[0] for c in db.query(Product.category).distinct().all()] 
@@ -528,6 +532,9 @@ async def serve_frontend():
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
             
+            /* High 5D Drop Shadow Effect for Product Cards */
+            .shadow-5d { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3), 0 15px 25px -15px rgba(0, 0, 0, 0.15); }
+            
             .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
             .glass-bottom-nav { background: rgba(255, 255, 255, 0.90); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-top: 1px solid rgba(226, 232, 240, 0.8); }
             .btn-press:active { transform: scale(0.95); transition: transform 0.1s ease; }
@@ -674,17 +681,25 @@ async def serve_frontend():
         <datalist id="vendor-categories-list"></datalist>
 
         <div id="shop-tab" class="tab-content animate-fade-in">
-            <div class="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex items-center justify-between">
-                <div class="text-[11px] font-extrabold text-indigo-900 flex items-center gap-1.5"><span class="text-sm">📍</span> ဒေသတွင်း ဈေးကွက်ရှာဖွေရန်</div>
-                <select id="local-state-filter" onchange="filterLocalState(this.value)" class="bg-white border border-indigo-200 text-indigo-700 py-1.5 px-3 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition">
-                    <option value="All">နေရာအားလုံး</option>
-                </select>
+            <div class="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-col gap-2.5">
+                <div class="text-[12px] font-extrabold text-indigo-900 flex items-center gap-1.5"><span class="text-base">📍</span> ဒေသတွင်း ဈေးကွက်ရှာဖွေရန်</div>
+                <div class="flex gap-2">
+                    <select id="local-state-filter" onchange="updateLocalTownships(this.value)" class="w-full bg-white border border-indigo-200 text-indigo-700 py-2.5 px-3 rounded-xl text-[13px] font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition">
+                        <option value="All">နေရာအားလုံး (တိုင်း/ပြည်နယ်)</option>
+                    </select>
+                </div>
+                <div class="flex gap-2 hidden" id="advanced-location-filters">
+                    <select id="local-township-filter" onchange="triggerSearch()" class="w-1/2 bg-white border border-indigo-200 text-indigo-700 py-2 px-3 rounded-xl text-[12px] font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition">
+                        <option value="All">မြို့နယ်အားလုံး</option>
+                    </select>
+                    <input type="text" id="local-ward-filter" oninput="triggerSearch()" placeholder="ရပ်ကွက် / ကျေးရွာ..." class="w-1/2 bg-white border border-indigo-200 text-slate-700 py-2 px-3 rounded-xl text-[12px] font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition">
+                </div>
             </div>
 
             <div class="p-4 bg-white shadow-sm border-b border-slate-100 mb-3 rounded-b-3xl">
                 <div class="relative mb-4">
                     <span class="absolute left-4 top-3 text-slate-400">🔍</span>
-                    <input type="text" id="search-box" oninput="autoSearch()" placeholder="ရှာဖွေလိုသော ပစ္စည်းအမည်..." class="w-full py-3 pl-10 pr-4 bg-slate-50 rounded-2xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium">
+                    <input type="text" id="search-box" oninput="triggerSearch()" placeholder="ရှာဖွေလိုသော ပစ္စည်းအမည်..." class="w-full py-3 pl-10 pr-4 bg-slate-50 rounded-2xl border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium">
                 </div>
                 <div id="category-container" class="flex gap-2.5 overflow-x-auto pb-2 scrollbar-hide pt-1"></div>
             </div>
@@ -806,7 +821,10 @@ async def serve_frontend():
             let allProducts = [], currentCategory = 'All', cart = [];
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
+            
+            // Advanced Location Filters
             let localStateFilter = "All";
+            let localTownshipFilter = "All";
 
             // Storefront variables
             let storeViewProducts = [];
@@ -951,41 +969,81 @@ async def serve_frontend():
                 }
             }
 
-            function filterLocalState(stateVal) { localStateFilter = stateVal; loadProducts(document.getElementById('search-box').value); }
+            // Advanced Location Filter Handlers
+            function updateLocalTownships(stateVal) {
+                localStateFilter = stateVal;
+                localTownshipFilter = "All";
+                document.getElementById('local-ward-filter').value = "";
+                
+                const advFilters = document.getElementById('advanced-location-filters');
+                const tspSelect = document.getElementById('local-township-filter');
+                
+                if (stateVal === "All") {
+                    advFilters.classList.add('hidden');
+                    tspSelect.innerHTML = '<option value="All">မြို့နယ်အားလုံး</option>';
+                } else {
+                    advFilters.classList.remove('hidden');
+                    let tHtml = '<option value="All">မြို့နယ်အားလုံး</option>';
+                    const districts = mmData[stateVal];
+                    for (let dist in districts) {
+                        districts[dist].forEach(t => {
+                            tHtml += `<option value="${t}">${t}</option>`;
+                        });
+                    }
+                    tspSelect.innerHTML = tHtml;
+                }
+                triggerSearch();
+            }
+
+            function triggerSearch() { 
+                clearTimeout(searchTimeout); 
+                searchTimeout = setTimeout(() => { 
+                    localTownshipFilter = document.getElementById('local-township-filter').value;
+                    loadProducts(document.getElementById('search-box').value); 
+                }, 400); 
+            }
 
             async function loadProducts(query = "") {
-                const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}&state=${localStateFilter}`); 
+                const wardFilter = document.getElementById('local-ward-filter') ? document.getElementById('local-ward-filter').value.trim() : "";
+                const res = await apiFetch(`/api/products?category=${currentCategory}&search=${query}&state=${localStateFilter}&township=${localTownshipFilter}&ward=${encodeURIComponent(wardFilter)}`); 
                 const data = await res.json(); allProducts = data.products;
                 
-                if(query === "" && localStateFilter === "All") {
+                if(query === "" && localStateFilter === "All" && wardFilter === "") {
                     let catsHTML = `<button onclick="filterCategory('All')" class="btn-press cat-chip ${currentCategory==='All'?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">အားလုံး</button>`;
                     data.categories.forEach(c => catsHTML += `<button onclick="filterCategory('${c}')" class="btn-press cat-chip ${currentCategory===c?'active':''} px-5 py-2.5 rounded-full text-xs font-bold bg-white whitespace-nowrap shadow-sm text-slate-600">${c}</button>`);
                     document.getElementById('category-container').innerHTML = catsHTML;
                 }
 
-                let sf = document.getElementById('local-state-filter'); let currSfVal = sf.value;
-                let sfHtml = `<option value="All">နေရာအားလုံး</option>`;
-                data.states.forEach(s => { sfHtml += `<option value="${s}" ${currSfVal === s ? 'selected' : ''}>${s}</option>`; });
-                sf.innerHTML = sfHtml;
+                let sf = document.getElementById('local-state-filter'); 
+                if(sf.options.length <= 1 && data.states.length > 0) {
+                    let currSfVal = sf.value;
+                    let sfHtml = `<option value="All">နေရာအားလုံး (တိုင်း/ပြည်နယ်)</option>`;
+                    data.states.forEach(s => { sfHtml += `<option value="${s}" ${currSfVal === s ? 'selected' : ''}>${s}</option>`; });
+                    sf.innerHTML = sfHtml;
+                }
 
                 if(allProducts.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center py-12 text-slate-400 font-medium animate-fade-up">ပစ္စည်းရှာမတွေ့ပါ 🔍</div>`;
                 document.getElementById('product-list').innerHTML = allProducts.map((p, index) => generateProductCardHTML(p, index)).join('');
             }
 
+            // EDGE-TO-EDGE + 5D SHADOW Implementation
             function generateProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
-                const locBadge = p.vendor_state ? `<span class="bg-indigo-50 text-indigo-600 px-1.5 rounded text-[8px] font-bold border border-indigo-100 shrink-0">📍 ${p.vendor_state.replace('တိုင်းဒေသကြီး', '').replace('ပြည်နယ်', '')}</span>` : '';
+                const locBadge = p.vendor_state ? `<span class="absolute top-2 left-2 bg-indigo-600/90 backdrop-blur text-white px-2 py-1 rounded-md text-[9px] font-bold shadow-md z-30">📍 ${p.vendor_state.replace('တိုင်းဒေသကြီး', '').replace('ပြည်နယ်', '')}</span>` : '';
                 
-                return `<div class="animate-fade-up bg-white rounded-[24px] shadow-[0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-xl ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
-                    ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-sm">ကုန်နေပါသည်</div>' : ''}
-                    <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
-                        <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
-                        <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
+                return `<div class="animate-fade-up bg-white rounded-[24px] shadow-5d overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-2 ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
+                    ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-md">ကုန်နေပါသည်</div>' : ''}
+                    
+                    <div class="relative w-full pt-[100%] bg-slate-50 overflow-hidden shrink-0 group">
+                        <img src="${imgSrc}" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110 z-10">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent z-20"></div>
+                        ${locBadge}
                     </div>
-                    <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20">
+                    
+                    <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20 relative">
                         <div class="mb-2">
-                            <div class="flex justify-between items-center mb-1 gap-1"><div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1">🏪 ${p.vendor_name}</div>${locBadge}</div>
+                            <div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1 mb-1">🏪 ${p.vendor_name}</div>
                             <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
                             <div class="flex justify-between items-end mb-2">
                                 <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
@@ -993,25 +1051,27 @@ async def serve_frontend():
                             </div>
                         </div>
                         <div class="flex gap-1.5 mt-1">
-                            <button onclick='openStore(${p.vendor_id})' class="btn-press flex-1 bg-white border border-slate-200 text-slate-600 py-2.5 rounded-xl font-bold text-[10px] shadow-sm hover:bg-slate-50">🏪 ဆိုင်ပြခန်း</button>
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1.5] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-bold text-xs" ${isOut?'disabled':''}>🛒 ဝယ်မည်</button>
+                            <button onclick='openStore(${p.vendor_id})' class="btn-press flex-1 bg-slate-50 border border-slate-200 text-slate-600 py-2.5 rounded-xl font-bold text-[10px] shadow-sm hover:bg-slate-100">🏪 ဆိုင်ပြခန်း</button>
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1.5] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-600 text-white shadow-md shadow-indigo-500/30 hover:bg-indigo-700'} py-2.5 rounded-xl font-bold text-xs" ${isOut?'disabled':''}>🛒 ဝယ်မည်</button>
                         </div>
                     </div>
                 </div>`
             }
 
-            // --- Storefront Specific Product Card UI ---
+            // EDGE-TO-EDGE + 5D SHADOW for Storefront Products
             function generateStorefrontProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
                 
-                return `<div class="animate-fade-up bg-white rounded-[24px] shadow-[0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-xl ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
-                    ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-sm">ကုန်နေပါသည်</div>' : ''}
-                    <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
-                        <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
-                        <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
+                return `<div class="animate-fade-up bg-white rounded-[24px] shadow-5d overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-2 ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
+                    ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-md">ကုန်နေပါသည်</div>' : ''}
+                    
+                    <div class="relative w-full pt-[100%] bg-slate-50 overflow-hidden shrink-0 group">
+                        <img src="${imgSrc}" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110 z-10">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent z-20"></div>
                     </div>
-                    <div class="p-3 flex-grow flex flex-col justify-between bg-white z-20">
+                    
+                    <div class="p-3.5 flex-grow flex flex-col justify-between bg-white z-20 relative">
                         <div class="mb-3">
                             <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
                             <div class="flex justify-between items-end mb-1">
@@ -1020,15 +1080,14 @@ async def serve_frontend():
                             </div>
                         </div>
                         <div class="flex gap-1.5 mt-auto">
-                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'} py-2 rounded-xl font-extrabold text-[10px]" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
-                            <button onclick='buyNow(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-600 text-white hover:bg-indigo-700'} py-2 rounded-xl font-extrabold text-[10px] shadow-md shadow-indigo-500/30" ${isOut?'disabled':''}>🛍️ ချက်ချင်းဝယ်မည်</button>
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'} py-2.5 rounded-xl font-extrabold text-[10px]" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
+                            <button onclick='buyNow(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1.2] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-600 text-white shadow-md shadow-indigo-500/30 hover:bg-indigo-700'} py-2.5 rounded-xl font-extrabold text-[10px]" ${isOut?'disabled':''}>🛍️ ချက်ချင်းဝယ်မည်</button>
                         </div>
                     </div>
                 </div>`
             }
 
             function filterCategory(cat) { currentCategory = cat; loadProducts(document.getElementById('search-box').value); }
-            function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
             async function openStore(vendorId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
@@ -1071,7 +1130,6 @@ async def serve_frontend():
             function renderStoreProducts() {
                 let filtered = storeCurrentCat === "All" ? storeViewProducts : storeViewProducts.filter(p => p.custom_category === storeCurrentCat);
                 document.getElementById('storefront-count').innerText = `${filtered.length} Items`;
-                // Storefront အတွက် သီးသန့် Card UI ကို ပြောင်းလဲအသုံးပြုထားသည်
                 document.getElementById('storefront-products').innerHTML = filtered.map((p, index) => generateStorefrontProductCardHTML(p, index)).join('');
             }
 
@@ -1084,9 +1142,9 @@ async def serve_frontend():
             }
 
             function buyNow(prod) {
-                addToCart(prod); // Cart ထဲသို့ ထည့်မည်
-                closeStore(); // ဆိုင်ပြခန်းကို ပိတ်မည်
-                showTab('cart-tab', 'btn-shop'); // ငွေချေရန် Cart Tab သို့ တိုက်ရိုက်သွားမည်
+                addToCart(prod); 
+                closeStore(); 
+                showTab('cart-tab', 'btn-shop'); 
             }
 
             function updateCartBadge() { 
