@@ -23,23 +23,6 @@ def get_mmt_now():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
 
 # ==========================================
-# AI မှ ရလာသော စာသားများ၊ မြန်မာဂဏန်းများကို ဂဏန်းအစစ်အဖြစ် ပြောင်းလဲရန် Helper (Error Fix)
-# ==========================================
-def parse_number(val, default=0, is_int=False):
-    try:
-        if isinstance(val, (int, float)): 
-            return int(val) if is_int else float(val)
-        # မြန်မာဂဏန်းများကို အင်္ဂလိပ်ဂဏန်းအဖြစ် ပြောင်းပေးခြင်း
-        en_str = str(val).translate(str.maketrans('၀၁၂၃၄၅၆၇၈၉', '0123456789'))
-        # ကော်မာ၊ စာသားများ ဖြုတ်ပြီး ဂဏန်းနှင့် ဒသမ (Dot) ကိုသာ ယူခြင်း
-        clean_str = ''.join(c for c in en_str if c in '0123456789.')
-        if not clean_str: 
-            return default
-        return int(float(clean_str)) if is_int else float(clean_str)
-    except:
-        return default
-
-# ==========================================
 # ၁။ CONFIGURATION & SETUP
 # ==========================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
@@ -160,6 +143,7 @@ except Exception: pass
 try:
     with engine.begin() as conn: conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
 except Exception: pass
+# New Migrations for Draft & Delete Features
 try:
     with engine.begin() as conn: 
         conn.execute(text("ALTER TABLE products ADD COLUMN is_published BOOLEAN DEFAULT 0"))
@@ -282,8 +266,10 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
 
 @app.get("/api/products")
 def get_products(category: str = "All", search: str = "", state: str = "All", township: str = "All", ward: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
+    # Buyer ကို ပြမည့် Product များသည် is_published == True ဖြစ်ရမည်
     query = db.query(Product).join(User).filter(Product.is_published == True)
     
+    # Apply Filters
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
     if state != "All": query = query.filter(User.store_state == state)
@@ -311,6 +297,7 @@ def get_products(category: str = "All", search: str = "", state: str = "All", to
 def get_store(vendor_id: int, db: Session = Depends(get_db)):
     vendor = db.query(User).filter(User.id == vendor_id).first()
     if not vendor: raise HTTPException(status_code=404)
+    # Store တွင်လည်း is_published = True မှသာပြမည်
     products = db.query(Product).filter(Product.vendor_id == vendor_id, Product.is_published == True).order_by(Product.id.desc()).all()
     
     res_prods = [{
@@ -410,12 +397,14 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
 
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # buyer_deleted မဖြစ်သော အော်ဒါများကိုသာ ပြမည်
     orders = db.query(Order).filter(Order.user_id == user.id, Order.buyer_deleted == False).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%d-%m-%Y %I:%M %p"), "pay": o.payment_method} for o in orders]
 
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
+    # vendor_deleted မဖြစ်သော အော်ဒါများကိုသာ ပြမည်
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id, Order.vendor_deleted == False).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "slip_img": o.payment_slip if o.payment_slip else ""} for o in orders]
 
@@ -450,6 +439,7 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
     
     return {"status": "success"}
 
+# Delete Order API Endpoint
 @app.delete("/api/orders/{order_id}")
 def delete_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     order = db.query(Order).filter(Order.id == order_id).first()
@@ -468,6 +458,7 @@ def delete_order(order_id: int, user: User = Depends(get_current_user), db: Sess
 @app.get("/api/vendor/products")
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
+    # Vendor ကို သူတင်ထားသမျှ အကုန်ပြမည် (Published ရော Unpublished ပါ)
     products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
     categories = list(set([p.custom_category for p in products if p.custom_category]))
     return {
@@ -499,7 +490,7 @@ def delete_product(product_id: int, user: User = Depends(get_current_user), db: 
     return {"status": "success"}
 
 # ==========================================
-# ၅။ AI-POWERED CMS CHAT BOT (ERROR FIXED)
+# ၅။ AI-POWERED CMS CHAT BOT
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -516,70 +507,47 @@ def handle_text_messages(message):
 @bot.message_handler(content_types=['photo'])
 def handle_cms_photo(message):
     db = SessionLocal()
+    user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
+    if not user: return db.close()
+
+    has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr
+    has_store = bool(user.store_name and user.store_state and user.store_ward)
+    
+    if not has_payment or not has_store:
+        bot.reply_to(message, "⚠️ **ရောင်းချရန် ဆိုင်အချက်အလက် (သို့) ငွေပေးချေမှုစနစ် မသတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ 'စီမံရန် -> Profile Setting' တွင် ဆိုင်အမည်၊ အသေးစိတ်လိပ်စာ နှင့် KPay/COD စနစ်တို့ကို အရင်သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
+        return db.close()
+
+    if user.role == "buyer":
+        user.role = "vendor"
+        db.commit()
+
     try:
-        user = db.query(User).filter(User.telegram_id == str(message.from_user.id)).first()
-        if not user: return
-
-        has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr
-        has_store = bool(user.store_name and user.store_state and user.store_ward)
-        
-        if not has_payment or not has_store:
-            bot.reply_to(message, "⚠️ **ရောင်းချရန် ဆိုင်အချက်အလက် (သို့) ငွေပေးချေမှုစနစ် မသတ်မှတ်ရသေးပါ။**\nApp ထဲသို့ဝင်၍ 'စီမံရန် -> Profile Setting' တွင် ဆိုင်အမည်၊ အသေးစိတ်လိပ်စာ နှင့် KPay/COD စနစ်တို့ကို အရင်သတ်မှတ်ပေးပါ။", parse_mode="Markdown")
-            return
-
-        if user.role == "buyer":
-            user.role = "vendor"
-            db.commit()
-
         caption = message.caption or "New Product"
         file_id = message.photo[-1].file_id 
         ai_data = {"name": "New Product", "price": 0, "category": "General", "description": caption, "stock": 10}
         
         if GROQ_API_KEY:
-            msg_to_delete = None
             try:
-                msg_to_delete = bot.reply_to(message, "⏳ AI ဖြင့် ပစ္စည်းအချက်အလက် ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
+                msg = bot.reply_to(message, "⏳ AI ဖြင့် ပစ္စည်းအချက်အလက် ခွဲခြမ်းစိတ်ဖြာနေပါသည်...")
                 headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
                 prompt = f"""Analyze the Burmese text for an e-commerce product: "{caption}". Extract details to strictly JSON. Required keys: 'name', 'price' (numeric), 'category', 'description', 'stock' (numeric)."""
                 payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
-                res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=15).json()
+                res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload).json()
                 parsed = json.loads(res['choices'][0]['message']['content'])
                 for k in ['name', 'price', 'category', 'description', 'stock']:
-                    if k in parsed and parsed[k] not in [None, ""]: 
-                        ai_data[k] = parsed[k]
-                if msg_to_delete: bot.delete_message(message.chat.id, msg_to_delete.message_id)
-            except Exception as ai_e: 
-                print("AI Parse Error:", ai_e)
-                if msg_to_delete: bot.delete_message(message.chat.id, msg_to_delete.message_id)
+                    if parsed.get(k): ai_data[k] = parsed[k]
+                bot.delete_message(message.chat.id, msg.message_id)
+            except: pass
 
-        # 📌 ဂဏန်းအမှားအယွင်းများ (မြန်မာဂဏန်း၊ စာသားများ) ကို အလိုအလျောက် သန့်စင်ပေးမည့် အပိုင်း
-        clean_price = parse_number(ai_data.get('price', 0), default=0.0, is_int=False)
-        clean_stock = parse_number(ai_data.get('stock', 10), default=10, is_int=True)
-
-        new_product = Product(
-            name=str(ai_data.get('name', 'New Product'))[:100], 
-            price=clean_price, 
-            description=str(ai_data.get('description', caption)), 
-            category=str(ai_data.get('category', 'General'))[:50], 
-            custom_category="General", 
-            stock=clean_stock, 
-            image_file_id=file_id, 
-            vendor_id=user.id, 
-            is_published=False  # 📌 Draft အနေဖြင့်သာ အရင်သိမ်းဆည်းပါမည်
-        )
+        # 📌 Default is_published = False (Draft)
+        new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], custom_category="General", stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id, is_published=False)
         db.add(new_product)
         db.commit()
         
-        success_msg = f"✅ **ပစ္စည်းကို 'စီမံရန် -> ပစ္စည်းများ' ထဲသို့ အကြမ်းထည် (Draft) အနေဖြင့် ထည့်သွင်းပြီးပါပြီ။**\n\n📌 {ai_data.get('name', 'New Product')}\n💰 {clean_price:,.0f} Ks\n📦 Stock: {clean_stock}\n\n⚠️ ဝယ်သူများမြင်တွေ့နိုင်ရန် App ထဲသို့ဝင်၍ 'ပိတ်ထားသည်' ကိုနှိပ်ပြီး '✅ ရောင်းနေသည်' သို့ ပြောင်းပေးပါ။"
+        success_msg = f"✅ **ပစ္စည်းကို 'စီမံရန် -> ပစ္စည်းများ' ထဲသို့ အကြမ်းထည် (Draft) အနေဖြင့် ထည့်သွင်းပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n📦 Stock: {ai_data['stock']}\n\n⚠️ ဝယ်သူများမြင်တွေ့နိုင်ရန် App ထဲသို့ဝင်၍ 'ပိတ်ထားသည်' ကိုနှိပ်ပြီး '✅ ရောင်းနေသည်' သို့ ပြောင်းပေးပါ။"
         bot.reply_to(message, success_msg, parse_mode="Markdown")
-        
-    except Exception as e:
-        # 📌 Error ဖြစ်ပါက Database ကို ပိတ်မနေစေရန် Rollback ချက်ချင်းခေါ်ပေးပါမည်
-        db.rollback()
-        bot.reply_to(message, f"⚠️ အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။ ကျေးဇူးပြု၍ စာသားများကို သေချာစစ်ဆေး၍ ထပ်မံကြိုးစားကြည့်ပါ။")
-        print("Product Upload Exception:", e)
-    finally:
-        db.close()
+    except Exception: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
+    finally: db.close()
 
 # ==========================================
 # ၆။ FRONTEND UI
