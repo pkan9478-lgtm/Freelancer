@@ -66,7 +66,7 @@ class User(Base):
     store_township = Column(String, default="")
     store_ward = Column(String, default="")
     store_street = Column(String, default="")
-    store_cover = Column(Text, default="") # NEW: Store Cover Image (16:9)
+    store_cover = Column(Text, default="") 
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -81,8 +81,8 @@ class Product(Base):
     name = Column(String, index=True)
     price = Column(Float)
     description = Column(String, default="") 
-    category = Column(String, default="General") # AI Auto Category
-    custom_category = Column(String, default="General") # NEW: Vendor's Custom Menu/Option
+    category = Column(String, default="General") 
+    custom_category = Column(String, default="General") 
     image_file_id = Column(String, default="")
     stock = Column(Integer, default=10) 
     vendor_id = Column(Integer, ForeignKey("users.id")) 
@@ -113,14 +113,12 @@ class Notification(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Auto-Migration Database for New Columns
+# Auto-Migration
 try:
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE users ADD COLUMN store_cover TEXT DEFAULT ''"))
+    with engine.begin() as conn: conn.execute(text("ALTER TABLE users ADD COLUMN store_cover TEXT DEFAULT ''"))
 except Exception: pass
 try:
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE products ADD COLUMN custom_category TEXT DEFAULT 'General'"))
+    with engine.begin() as conn: conn.execute(text("ALTER TABLE products ADD COLUMN custom_category TEXT DEFAULT 'General'"))
 except Exception: pass
 try:
     with engine.begin() as conn: conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
@@ -232,7 +230,6 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     data = await req.json()
     if user.role == "buyer": user.role = "vendor"
     
-    # Update Store Info & Address
     if "store_name" in data: user.store_name = data.get("store_name", user.store_name)
     if "store_state" in data: user.store_state = data.get("store_state", user.store_state)
     if "store_district" in data: user.store_district = data.get("store_district", user.store_district)
@@ -241,7 +238,6 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     if "store_street" in data: user.store_street = data.get("store_street", user.store_street)
     if "store_cover" in data: user.store_cover = data.get("store_cover", user.store_cover)
 
-    # Update Payment Info
     if "accept_cod" in data: user.accept_cod = data.get("accept_cod", user.accept_cod)
     if "kpay_phone" in data: user.kpay_phone = data.get("kpay_phone", user.kpay_phone)
     if "wave_phone" in data: user.wave_phone = data.get("wave_phone", user.wave_phone)
@@ -290,7 +286,6 @@ def get_store(vendor_id: int, db: Session = Depends(get_db)):
         "vendor_wave": vendor.wave_phone, "kpay_qr": vendor.kpay_qr, "wave_qr": vendor.wave_qr
     } for p in products]
     
-    # Extract unique custom categories for the store Menu Options
     store_categories = list(set([p.custom_category for p in products if p.custom_category]))
     if not store_categories: store_categories = ["General"]
     
@@ -1005,6 +1000,33 @@ async def serve_frontend():
                 </div>`
             }
 
+            // --- Storefront Specific Product Card UI ---
+            function generateStorefrontProductCardHTML(p, index) {
+                const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
+                const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
+                
+                return `<div class="animate-fade-up bg-white rounded-[24px] shadow-[0_4px_16px_rgba(0,0,0,0.03)] border border-slate-100 overflow-hidden flex flex-col relative transition-all duration-300 transform hover:-translate-y-1 hover:shadow-xl ${isOut ? 'opacity-60 grayscale-[30%]' : ''}" style="animation-delay: ${animDelay}s">
+                    ${isOut ? '<div class="absolute top-2 right-2 bg-red-500/90 backdrop-blur text-white text-[10px] font-black px-2 py-1 rounded-lg z-30 shadow-sm">ကုန်နေပါသည်</div>' : ''}
+                    <div class="pt-5 pb-3 px-4 bg-slate-50 border-b border-slate-100/50 flex flex-col items-center justify-center relative overflow-hidden shrink-0">
+                        <div class="absolute bottom-0 w-full h-1/3 bg-gradient-to-t from-slate-200/50 to-transparent"></div>
+                        <img src="${imgSrc}" class="w-[90px] h-[90px] object-cover rounded-[18px] shadow-[0_8px_16px_rgba(0,0,0,0.08)] border-2 border-white relative z-10 transform transition-transform duration-300 hover:scale-105 bg-white">
+                    </div>
+                    <div class="p-3 flex-grow flex flex-col justify-between bg-white z-20">
+                        <div class="mb-3">
+                            <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
+                            <div class="flex justify-between items-end mb-1">
+                                <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
+                                <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
+                            </div>
+                        </div>
+                        <div class="flex gap-1.5 mt-auto">
+                            <button onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'} py-2 rounded-xl font-extrabold text-[10px]" ${isOut?'disabled':''}>🛒 ခြင်းထဲထည့်မည်</button>
+                            <button onclick='buyNow(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-[1] ${isOut?'bg-slate-100 text-slate-400':'bg-indigo-600 text-white hover:bg-indigo-700'} py-2 rounded-xl font-extrabold text-[10px] shadow-md shadow-indigo-500/30" ${isOut?'disabled':''}>🛍️ ချက်ချင်းဝယ်မည်</button>
+                        </div>
+                    </div>
+                </div>`
+            }
+
             function filterCategory(cat) { currentCategory = cat; loadProducts(document.getElementById('search-box').value); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
@@ -1049,7 +1071,8 @@ async def serve_frontend():
             function renderStoreProducts() {
                 let filtered = storeCurrentCat === "All" ? storeViewProducts : storeViewProducts.filter(p => p.custom_category === storeCurrentCat);
                 document.getElementById('storefront-count').innerText = `${filtered.length} Items`;
-                document.getElementById('storefront-products').innerHTML = filtered.map((p, index) => generateProductCardHTML(p, index)).join('');
+                // Storefront အတွက် သီးသန့် Card UI ကို ပြောင်းလဲအသုံးပြုထားသည်
+                document.getElementById('storefront-products').innerHTML = filtered.map((p, index) => generateStorefrontProductCardHTML(p, index)).join('');
             }
 
             function closeStore() { if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); const storeView = document.getElementById('storefront-view'); storeView.classList.add('closing'); setTimeout(() => { storeView.classList.remove('active'); storeView.classList.remove('closing'); }, 300); }
@@ -1059,6 +1082,13 @@ async def serve_frontend():
                 if(ex) { if(ex.qty < prod.stock) ex.qty++; else return showToast("Stock မလုံလောက်ပါ။"); } else { cart.push({...prod, qty: 1}); }
                 updateCartBadge(); showToast("🛒 ခြင်းထဲရောက်ပါပြီ"); 
             }
+
+            function buyNow(prod) {
+                addToCart(prod); // Cart ထဲသို့ ထည့်မည်
+                closeStore(); // ဆိုင်ပြခန်းကို ပိတ်မည်
+                showTab('cart-tab', 'btn-shop'); // ငွေချေရန် Cart Tab သို့ တိုက်ရိုက်သွားမည်
+            }
+
             function updateCartBadge() { 
                 const b = document.getElementById('cart-count'); let t = cart.reduce((s, i) => s + i.qty, 0); 
                 b.innerText = t; 
