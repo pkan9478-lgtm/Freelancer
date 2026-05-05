@@ -58,12 +58,14 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
-    # Store / Local Commerce Settings (NEW)
+    # Store / Local Commerce Settings
     store_name = Column(String, default="")
     store_description = Column(String, default="")
     store_state = Column(String, default="")
     store_district = Column(String, default="")
     store_township = Column(String, default="")
+    store_ward = Column(String, default="")    # NEW: ရပ်ကွက် / ကျေးရွာ
+    store_street = Column(String, default="")  # NEW: လမ်းအမည် / ပတ်ဝန်းကျင်
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -121,6 +123,8 @@ try:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_state TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_district TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_township TEXT DEFAULT ''"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))    # Auto-add new column
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))  # Auto-add new column
 except Exception: pass
 
 def get_db():
@@ -165,7 +169,7 @@ def get_telegram_image(file_id: str):
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
-    # Check if BOTH payment and store info are set
+    # Check if BOTH payment and basic store info are set
     has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr or user.wave_qr
     has_store = bool(user.store_name and user.store_state)
     vendor_ready = has_payment and has_store
@@ -174,7 +178,9 @@ def authenticate_user(user: User = Depends(get_current_user)):
             "id": user.telegram_id, "name": user.full_name, "role": user.role, 
             "default_address": user.default_address, "phone": user.phone,
             "vendor_ready": vendor_ready,
-            "store_name": user.store_name, "store_state": user.store_state, "store_district": user.store_district, "store_township": user.store_township,
+            "store_name": user.store_name, "store_state": user.store_state, 
+            "store_district": user.store_district, "store_township": user.store_township,
+            "store_ward": user.store_ward, "store_street": user.store_street,
             "kpay_phone": user.kpay_phone, "wave_phone": user.wave_phone,
             "accept_cod": user.accept_cod
         }
@@ -221,6 +227,8 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     if "store_state" in data: user.store_state = data.get("store_state", user.store_state)
     if "store_district" in data: user.store_district = data.get("store_district", user.store_district)
     if "store_township" in data: user.store_township = data.get("store_township", user.store_township)
+    if "store_ward" in data: user.store_ward = data.get("store_ward", user.store_ward)        # Update Ward
+    if "store_street" in data: user.store_street = data.get("store_street", user.store_street) # Update Street
 
     # Update Payment Info
     if "accept_cod" in data: user.accept_cod = data.get("accept_cod", user.accept_cod)
@@ -275,6 +283,8 @@ def get_store(vendor_id: int, db: Session = Depends(get_db)):
             "state": vendor.store_state,
             "district": vendor.store_district,
             "township": vendor.store_township,
+            "ward": vendor.store_ward,     # Pass to Frontend Store UI
+            "street": vendor.store_street, # Pass to Frontend Store UI
             "phone": vendor.phone
         },
         "products": res_prods
@@ -519,7 +529,7 @@ async def serve_frontend():
 
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
-            .store-gradient-bg { background: linear-gradient(135deg, #0f172a, #334155); } /* Store Header */
+            .store-gradient-bg { background: linear-gradient(135deg, #0f172a, #334155); } 
             
             /* Glassmorphism components */
             .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
@@ -602,7 +612,7 @@ async def serve_frontend():
                     <div class="w-20 h-20 bg-white rounded-[24px] shadow-xl border-4 border-white/20 flex items-center justify-center text-4xl mb-3">🏪</div>
                     <h2 id="storefront-name" class="text-2xl font-black text-white mb-1.5 tracking-wide">ဆိုင်အမည်</h2>
                     <div class="flex items-center gap-1.5 bg-white/10 backdrop-blur px-3 py-1.5 rounded-full border border-white/10">
-                        <span class="text-sm">📍</span> <span id="storefront-location" class="text-xs font-bold text-slate-100">တည်နေရာ</span>
+                        <span class="text-sm">📍</span> <span id="storefront-location" class="text-xs font-bold text-slate-100 leading-snug">တည်နေရာ</span>
                     </div>
                 </div>
             </div>
@@ -706,7 +716,7 @@ async def serve_frontend():
                     <div class="space-y-4">
                         <div>
                             <label class="block text-xs font-bold text-slate-500 mb-1.5">ဆိုင်အမည် (Store Name) <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-name" placeholder="ဥပမာ - Royal Fashion" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <input type="text" id="prof-store-name" placeholder="ဥပမာ - Royal Fashion" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold">
                         </div>
                         <div>
                             <label class="block text-xs font-bold text-slate-500 mb-1.5">တည်နေရာ (State/Region) <span class="text-red-500">*</span></label>
@@ -719,6 +729,14 @@ async def serve_frontend():
                         <div>
                             <label class="block text-xs font-bold text-slate-500 mb-1.5">မြို့နယ် (Township) <span class="text-red-500">*</span></label>
                             <select id="prof-store-township" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- မြို့နယ် --</option></select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ရပ်ကွက် / ကျေးရွာ (Ward/Village) <span class="text-red-500">*</span></label>
+                            <input type="text" id="prof-store-ward" placeholder="ဥပမာ - အမှတ် (၁) ရပ်ကွက်" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 mb-1.5">လမ်းအမည် / ပတ်ဝန်းကျင်အမည် (Street/Neighborhood) <span class="text-red-500">*</span></label>
+                            <input type="text" id="prof-store-street" placeholder="ဥပမာ - ဗိုလ်ချုပ်လမ်း၊ ဈေးအနီး" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold">
                         </div>
                     </div>
                 </div>
@@ -753,7 +771,7 @@ async def serve_frontend():
                 <button onclick="document.getElementById('setup-modal').classList.remove('active')" class="btn-press absolute top-4 right-4 text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
                 <div class="text-4xl mb-3 animate-bounce-short">🏪</div>
                 <h2 class="font-extrabold text-xl mb-2 text-slate-800">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
-                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်၏ **ဆိုင်အမည်၊ တည်နေရာလိပ်စာ** နှင့် **ငွေချေစနစ် (KPay, Wave, COD)** များကို Profile တွင် အရင်သေချာစွာ သတ်မှတ်ပေးရန် လိုအပ်ပါသည်။</p>
+                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်၏ **ဆိုင်အမည်၊ တည်နေရာလိပ်စာ အပြည့်အစုံ** နှင့် **ငွေချေစနစ် (KPay, Wave, COD)** များကို Profile တွင် အရင်သေချာစွာ သတ်မှတ်ပေးရန် လိုအပ်ပါသည်။</p>
                 <button onclick="document.getElementById('setup-modal').classList.remove('active'); showTab('orders-tab', 'btn-orders'); switchVendorTab('profile');" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-md text-sm">Profile Setting သို့သွားရန်</button>
             </div>
         </div>
@@ -793,6 +811,10 @@ async def serve_frontend():
                     document.getElementById('prof-kpay-ph').value = currentUser.kpay_phone || '';
                     document.getElementById('prof-wave-ph').value = currentUser.wave_phone || '';
                     document.getElementById('prof-store-name').value = currentUser.store_name || '';
+                    
+                    // NEW: Pre-fill Ward and Street
+                    document.getElementById('prof-store-ward').value = currentUser.store_ward || '';
+                    document.getElementById('prof-store-street').value = currentUser.store_street || '';
                     
                     // Safe populate location dropdowns
                     if(currentUser.store_state) {
@@ -898,14 +920,19 @@ async def serve_frontend():
                 const sState = document.getElementById('prof-store-state').value;
                 const sDist = document.getElementById('prof-store-district').value;
                 const sTsp = document.getElementById('prof-store-township').value;
+                
+                // NEW: Validate new fields
+                const sWard = document.getElementById('prof-store-ward').value.trim();
+                const sStreet = document.getElementById('prof-store-street').value.trim();
 
-                if(!sName || !sState || !sDist || !sTsp) {
+                if(!sName || !sState || !sDist || !sTsp || !sWard || !sStreet) {
                     return showToast("⚠️ ဆိုင်အမည်နှင့် တည်နေရာ အားလုံးကို ပြည့်စုံစွာ ဖြည့်ပါ။");
                 }
 
                 tg.MainButton.showProgress();
                 const payload = { 
                     store_name: sName, store_state: sState, store_district: sDist, store_township: sTsp,
+                    store_ward: sWard, store_street: sStreet, // ADDED TO PAYLOAD
                     accept_cod: document.getElementById('prof-cod').checked, 
                     kpay_phone: document.getElementById('prof-kpay-ph').value, wave_phone: document.getElementById('prof-wave-ph').value, 
                     kpay_qr: document.getElementById('prof-kpay-qr').value, wave_qr: document.getElementById('prof-wave-qr').value 
@@ -1006,7 +1033,13 @@ async def serve_frontend():
                     const data = await res.json();
                     
                     document.getElementById('storefront-name').innerText = data.store.name;
-                    document.getElementById('storefront-location').innerText = data.store.state ? `${data.store.township}၊ ${data.store.state}` : 'တည်နေရာ မသတ်မှတ်ရသေးပါ';
+                    
+                    // NEW: Update Location Text to include Ward and Street dynamically
+                    let wardStr = data.store.ward ? data.store.ward + '၊ ' : '';
+                    let streetStr = data.store.street ? data.store.street + '၊ ' : '';
+                    let fullLoc = data.store.state ? `${streetStr}${wardStr}${data.store.township}၊ ${data.store.state}` : 'တည်နေရာ မသတ်မှတ်ရသေးပါ';
+                    
+                    document.getElementById('storefront-location').innerText = fullLoc;
                     document.getElementById('storefront-count').innerText = `${data.products.length} Items`;
                     
                     document.getElementById('storefront-products').innerHTML = data.products.map((p, index) => {
