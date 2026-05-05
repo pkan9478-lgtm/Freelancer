@@ -26,7 +26,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Storefront Enhanced)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Storefront Menu Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -58,17 +58,15 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
-    # Store Settings
+    # Store / Local Commerce Settings
     store_name = Column(String, default="")
     store_description = Column(String, default="")
-    store_banner = Column(Text, default="") # NEW: Storefront 16:9 Banner
-    
-    # Address Fields
     store_state = Column(String, default="")
     store_district = Column(String, default="")
     store_township = Column(String, default="")
     store_ward = Column(String, default="")
     store_street = Column(String, default="")
+    store_banner = Column(Text, default="") # NEW: 16:9 Banner Image Base64
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -83,7 +81,7 @@ class Product(Base):
     name = Column(String, index=True)
     price = Column(Float)
     description = Column(String, default="") 
-    category = Column(String, default="General") # Handled via Menu Options
+    category = Column(String, default="General") # Category (Menu Option)
     image_file_id = Column(String, default="")
     stock = Column(Integer, default=10) 
     vendor_id = Column(Integer, ForeignKey("users.id")) 
@@ -114,7 +112,7 @@ class Notification(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Auto-Migrations
+# Auto-Migration Database for All Columns
 try:
     with engine.begin() as conn: conn.execute(text("ALTER TABLE orders ADD COLUMN payment_slip TEXT DEFAULT ''"))
 except Exception: pass
@@ -127,7 +125,7 @@ try:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_township TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN store_banner TEXT DEFAULT ''")) # Add Banner Column
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_banner TEXT DEFAULT ''")) # Migration for Banner
 except Exception: pass
 
 def get_db():
@@ -181,10 +179,10 @@ def authenticate_user(user: User = Depends(get_current_user)):
             "id": user.telegram_id, "name": user.full_name, "role": user.role, 
             "default_address": user.default_address, "phone": user.phone,
             "vendor_ready": vendor_ready,
-            "store_name": user.store_name, "store_banner": user.store_banner,
-            "store_state": user.store_state, "store_district": user.store_district, 
-            "store_township": user.store_township, "store_ward": user.store_ward, 
-            "store_street": user.store_street,
+            "store_name": user.store_name, "store_state": user.store_state, 
+            "store_district": user.store_district, "store_township": user.store_township,
+            "store_ward": user.store_ward, "store_street": user.store_street,
+            "store_banner": user.store_banner,
             "kpay_phone": user.kpay_phone, "wave_phone": user.wave_phone,
             "accept_cod": user.accept_cod
         }
@@ -227,12 +225,12 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
     if user.role == "buyer": user.role = "vendor"
     
     if "store_name" in data: user.store_name = data.get("store_name", user.store_name)
-    if "store_banner" in data: user.store_banner = data.get("store_banner", user.store_banner) # Upload Banner
     if "store_state" in data: user.store_state = data.get("store_state", user.store_state)
     if "store_district" in data: user.store_district = data.get("store_district", user.store_district)
     if "store_township" in data: user.store_township = data.get("store_township", user.store_township)
     if "store_ward" in data: user.store_ward = data.get("store_ward", user.store_ward)
     if "store_street" in data: user.store_street = data.get("store_street", user.store_street)
+    if "store_banner" in data: user.store_banner = data.get("store_banner", user.store_banner)
 
     if "accept_cod" in data: user.accept_cod = data.get("accept_cod", user.accept_cod)
     if "kpay_phone" in data: user.kpay_phone = data.get("kpay_phone", user.kpay_phone)
@@ -307,22 +305,16 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
 
         if not cart_items: raise HTTPException(status_code=400, detail="ခြင်းတောင်းထဲတွင် ပစ္စည်းမရှိပါ။")
         
-        total_amount = 0
-        ordered_names = []
-        vendor_notify = None
+        total_amount = 0; ordered_names = []; vendor_notify = None
 
         for item in cart_items:
-            p_id = item.get('id')
-            qty = item.get('qty', 1)
-            
+            p_id = item.get('id'); qty = item.get('qty', 1)
             product = db.query(Product).filter(Product.id == p_id).first()
-            if not product: raise HTTPException(status_code=400, detail="အချို့ပစ္စည်းများမှာ စနစ်ထဲတွင် မရှိတော့ပါ။")
-            if product.stock < qty: raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
+            if not product: db.rollback(); raise HTTPException(status_code=400, detail="အချို့ပစ္စည်းများမှာ စနစ်ထဲတွင် မရှိတော့ပါ။")
+            if product.stock < qty: db.rollback(); raise HTTPException(status_code=400, detail=f"'{product.name}' သည် လက်ကျန် ({product.stock}) သာရှိပါတော့သည်။")
                 
             db.add(Order(user_id=user.id, product_id=product.id, quantity=qty, transaction_id=tx_id, address=address, payment_method=payment_method, payment_slip=payment_slip_b64 if payment_slip_b64 else ""))
-            product.stock -= qty 
-            total_amount += (product.price * qty)
-            ordered_names.append(f"{product.name} (x{qty})")
+            product.stock -= qty; total_amount += (product.price * qty); ordered_names.append(f"{product.name} (x{qty})")
             if product.vendor: vendor_notify = product.vendor.telegram_id
                 
         if address and user.default_address != address: user.default_address = address
@@ -337,17 +329,14 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
             if vendor_notify:
                 vendor_caption = f"🔔 **အော်ဒါအသစ်ဝင်ပါသည်**\nဝယ်သူ: {user.full_name} (Ph: {phone})\n{items_str}\nလိပ်စာ: {address}\nငွေချေစနစ်: {pay_msg}\n\nApp ထဲတွင် ငွေလွှဲပြေစာနှင့် အချက်အလက်များကို သေချာစစ်ဆေး၍ အတည်ပြုပေးပါ။"
                 if payment_slip_b64 and payment_method != "COD":
-                    try:
-                        img_data = base64.b64decode(payment_slip_b64.split(',')[1] if ',' in payment_slip_b64 else payment_slip_b64)
-                        bot.send_photo(vendor_notify, photo=img_data, caption=vendor_caption, parse_mode="Markdown")
+                    try: bot.send_photo(vendor_notify, photo=base64.b64decode(payment_slip_b64.split(',')[1] if ',' in payment_slip_b64 else payment_slip_b64), caption=vendor_caption, parse_mode="Markdown")
                     except Exception: bot.send_message(vendor_notify, vendor_caption + "\n_(ငွေလွှဲပြေစာပုံအား App ထဲရှိ စီမံရန် -> အော်ဒါများ တွင် ဝင်ကြည့်ပါ။)_", parse_mode="Markdown")
                 else: bot.send_message(vendor_notify, vendor_caption, parse_mode="Markdown")
-        except Exception as e: pass
+        except Exception as e: print("Telegram Send Error:", e)
+
         return {"status": "success"}
     except HTTPException: raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="စနစ်ချို့ယွင်းမှုဖြစ်ပေါ်နေပါသည်။ ခေတ္တစောင့်ပါ။")
+    except Exception as e: db.rollback(); raise HTTPException(status_code=500, detail="စနစ်ချို့ယွင်းမှုဖြစ်ပေါ်နေပါသည်။ ခေတ္တစောင့်ပါ။")
 
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -362,7 +351,7 @@ def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depe
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    status_map = {"pending": ("⏳ အော်ဒါကို စစ်ဆေးနေဆဲဖြစ်ပါသည်။", "စစ်ဆေးဆဲ"), "approved": ("✅ အော်ဒါ အတည်ပြုပါသည်။ ထုပ်ပိုးနေပါသည်။", "ထုပ်ပိုးနေသည်"), "shipped": ("🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "ပို့ဆောင်နေသည်"), "delivered": ("🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "ရောက်ရှိပါပြီ"), "cancelled": ("❌ သင့်အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။", "ပယ်ဖျက်လိုက်သည်")}
+    status_map = { "pending": ("⏳ အော်ဒါကို စစ်ဆေးနေဆဲဖြစ်ပါသည်။", "စစ်ဆေးဆဲ"), "approved": ("✅ အော်ဒါ အတည်ပြုပါသည်။ ထုပ်ပိုးနေပါသည်။", "ထုပ်ပိုးနေသည်"), "shipped": ("🚚 ပစ္စည်းပို့ဆောင်ပေးလိုက်ပါပြီ။", "ပို့ဆောင်နေသည်"), "delivered": ("🎁 ပစ္စည်းလက်ခံရရှိကြောင်း မှတ်တမ်းတင်ပြီးပါပြီ။", "ရောက်ရှိပါပြီ"), "cancelled": ("❌ သင့်အော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်။", "ပယ်ဖျက်လိုက်သည်") }
     order = db.query(Order).filter(Order.id == order_id).first()
     if not order or (order.product.vendor_id != user.id and user.role != "admin"): raise HTTPException(status_code=400, detail="Permission Denied")
     
@@ -373,8 +362,7 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
     elif order.status == "cancelled" and new_status != "cancelled": order.product.stock -= order.quantity
 
     order.status = new_status
-    noti_msg = f"သင့်အော်ဒါ '{order.product.name}' ၏ အခြေအနေမှာ '{status_map[new_status][1]}' သို့ ပြောင်းလဲသွားပါသည်။"
-    db.add(Notification(user_id=order.user_id, message=noti_msg))
+    db.add(Notification(user_id=order.user_id, message=f"သင့်အော်ဒါ '{order.product.name}' ၏ အခြေအနေမှာ '{status_map[new_status][1]}' သို့ ပြောင်းလဲသွားပါသည်။"))
     db.commit()
 
     try: bot.send_message(order.user.telegram_id, f"{status_map[new_status][0]}\nပစ္စည်း: **{order.product.name} (x{order.quantity})**", parse_mode="Markdown")
@@ -385,6 +373,7 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
+    # Return category as well so vendor can see the assigned menu/option
     return [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock, "category":p.category, "img":p.image_file_id} for p in products]
 
 @app.put("/api/vendor/products/{product_id}")
@@ -396,8 +385,8 @@ async def edit_product(product_id: int, request: Request, user: User = Depends(g
     product.name = data.get("name", product.name)
     product.price = float(data.get("price", product.price))
     product.stock = int(data.get("stock", product.stock))
-    if "category" in data: product.category = data.get("category", "General") # Menu Category Assignment
-    
+    # NEW: Allow vendor to update the Category (Menu Option)
+    if "category" in data: product.category = data.get("category", product.category)
     db.commit()
     return {"status": "success"}
 
@@ -453,12 +442,12 @@ def handle_cms_photo(message):
         new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id)
         db.add(new_product)
         db.commit()
-        bot.reply_to(message, f"✅ **ပစ္စည်း အလိုအလျောက် တင်ပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n📦 Stock: {ai_data['stock']}\n🏷 Category: {ai_data['category']}", parse_mode="Markdown")
+        bot.reply_to(message, f"✅ **ပစ္စည်း အလိုအလျောက် တင်ပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n🏷️ အမျိုးအစား: {ai_data['category']}\n💰 {ai_data['price']} Ks\n📦 Stock: {ai_data['stock']}\n_(အမျိုးအစားပြောင်းလိုပါက App ထဲတွင် ပြင်နိုင်ပါသည်။)_", parse_mode="Markdown")
     except Exception: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (Full Storefront & Category Enhancements)
+# ၆။ FRONTEND UI (Beautiful Storefront & Menu Options)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -478,10 +467,14 @@ async def serve_frontend():
             .animate-fade-up { animation: fadeUp 0.4s ease-out forwards; }
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
             .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
-            @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
-            .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
+            @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+            .animate-slide-in { animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+            @keyframes slideOutRight { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+            .animate-slide-out { animation: slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
             .animate-float { animation: float 3s ease-in-out infinite; }
+            @keyframes bounceShort { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+            .animate-bounce-short { animation: bounceShort 0.3s ease-out; }
 
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
@@ -493,21 +486,21 @@ async def serve_frontend():
             .tab-btn.active { color: #4f46e5; }
             .cat-chip { transition: all 0.2s ease; border: 1px solid #e2e8f0; }
             .cat-chip.active { background: linear-gradient(135deg, #2563eb, #8b5cf6); color: white; border-color: transparent; box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.2); }
-            .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             
+            /* STOREFRONT SPECIFIC STYLES */
+            .sf-menu-chip { white-space: nowrap; padding: 8px 20px; border-radius: 9999px; font-size: 13px; font-weight: 800; transition: all 0.3s; background: white; border: 1px solid #e2e8f0; color: #64748b; }
+            .sf-menu-chip.active { background: #4f46e5; color: white; border-color: #4f46e5; box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3); }
+            #storefront-view { position: fixed; inset: 0; background: #f8fafc; z-index: 55; display: none; overflow-y: auto; padding-bottom: 90px; }
+            #storefront-view.active { display: block; animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+            #storefront-view.closing { animation: slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+            .badge { position: absolute; top: -3px; right: -3px; background: #ef4444; color: white; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: 800; box-shadow: 0 2px 4px rgba(239,68,68,0.3); }
             .modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(6px); z-index: 60; display: none; align-items: center; justify-content: center; padding: 20px; }
             .modal-overlay.active { display: flex; animation: fadeIn 0.2s ease-out; }
             .slide-up-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); z-index: 70; display: none; flex-direction: column; justify-content: flex-end; }
             .slide-up-modal.active { display: flex; animation: fadeIn 0.2s; }
             .slide-up-content { background: white; border-radius: 24px 24px 0 0; padding: 24px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-            
-            /* STOREFRONT NEW CSS */
-            #storefront-view { position: fixed; inset: 0; background: #f8fafc; z-index: 55; display: none; flex-direction: column; }
-            #storefront-view.active { display: flex; animation: fadeIn 0.3s ease-out forwards; }
-            #storefront-view.closing { animation: fadeOut 0.3s ease-out forwards; }
-            @keyframes fadeOut { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.98); } }
-
             #toast { visibility: hidden; min-width: 250px; background: rgba(15, 23, 42, 0.95); color: #fff; text-align: center; border-radius: 16px; padding: 14px 20px; position: fixed; z-index: 100; left: 50%; bottom: 85px; transform: translateX(-50%); font-size: 13px; font-weight: 600; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
             #toast.show { visibility: visible; animation: fadein 0.3s, fadeout 0.3s 3.5s; }
             
@@ -519,7 +512,6 @@ async def serve_frontend():
             .track-step.active .track-dot { border-color: transparent; background: linear-gradient(135deg, #3b82f6, #8b5cf6); box-shadow: 0 4px 6px rgba(139, 92, 246, 0.3); }
             .track-label { font-size: 10px; font-weight: 800; color: #94a3b8; }
             .track-step.active .track-label { color: #4f46e5; }
-            .status-cancelled { background-color: #fef2f2; color: #ef4444; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 800; border: 1px solid #fee2e2; }
         </style>
     </head>
     <body class="pb-24">
@@ -555,31 +547,29 @@ async def serve_frontend():
         </div>
 
         <div id="storefront-view">
-            <div id="storefront-header-bg" class="flex-shrink-0 z-50 w-full aspect-[16/9] max-h-[190px] bg-cover bg-center shadow-md flex flex-col justify-end pb-3 px-4 relative bg-slate-800">
-                <div class="absolute inset-0 bg-gradient-to-t from-slate-900/95 via-slate-900/30 to-transparent"></div>
-                <button onclick="closeStore()" class="absolute top-4 left-4 text-white bg-black/30 hover:bg-black/50 backdrop-blur-md rounded-full w-9 h-9 flex items-center justify-center font-bold btn-press transition z-20">&larr;</button>
-                
-                <div class="relative z-10 flex flex-col gap-1.5 animate-fade-up">
-                    <h2 id="storefront-name" class="text-[22px] font-black text-white tracking-wide shadow-sm leading-tight">ဆိုင်အမည်</h2>
-                    <div class="flex items-center gap-1 bg-white/20 backdrop-blur-md px-2.5 py-1 rounded-md border border-white/10 w-max">
-                        <span class="text-xs">📍</span> <span id="storefront-location" class="text-[10px] font-bold text-white line-clamp-1">တည်နေရာ</span>
+            <div class="relative w-full aspect-video bg-slate-200 shadow-sm overflow-hidden">
+                <img id="sf-banner-img" src="" class="w-full h-full object-cover">
+                <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+                <button onclick="closeStore()" class="absolute top-4 left-4 bg-white/20 backdrop-blur text-white w-10 h-10 rounded-full flex items-center justify-center text-xl font-bold border border-white/30 z-10 btn-press">&larr;</button>
+                <div class="absolute bottom-4 left-4 right-4 text-white z-10">
+                    <h2 id="sf-name" class="text-2xl font-black shadow-sm mb-1 tracking-wide">Store Name</h2>
+                    <div class="text-[11px] font-medium flex items-center gap-1.5 opacity-90 bg-black/30 backdrop-blur w-fit px-2.5 py-1 rounded-lg">
+                        <span class="text-sm">📍</span> <span id="sf-location" class="line-clamp-1">Location</span>
                     </div>
                 </div>
             </div>
             
-            <div class="flex-1 overflow-y-auto pb-20 bg-slate-50">
-                <div class="sticky top-0 z-40 bg-white/95 backdrop-blur-md shadow-[0_4px_12px_rgba(0,0,0,0.03)] border-b border-slate-100">
-                    <div id="storefront-categories" class="flex gap-2.5 overflow-x-auto py-3 px-4 scrollbar-hide items-center">
-                        </div>
-                </div>
-                
-                <div class="p-4 pt-5">
-                    <div class="flex justify-between items-end mb-4 px-1">
-                        <h3 id="storefront-current-menu-title" class="font-extrabold text-slate-800 text-lg flex items-center gap-2"><span class="text-indigo-500">❖</span> အားလုံး</h3>
-                        <span id="storefront-count" class="text-[11px] font-extrabold text-slate-500 bg-slate-200/50 px-2 py-0.5 rounded-md">0 Items</span>
+            <div class="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-100 shadow-[0_4px_10px_rgba(0,0,0,0.03)]">
+                <div id="sf-menu-container" class="flex gap-2 overflow-x-auto p-3 scrollbar-hide">
                     </div>
-                    <div id="storefront-products" class="grid grid-cols-2 gap-3.5"></div>
+            </div>
+
+            <div class="p-4 bg-slate-50 min-h-screen">
+                <div class="flex justify-between items-end mb-4">
+                    <h3 class="font-extrabold text-slate-800 text-base" id="sf-current-menu-title">ပစ္စည်းများ အားလုံး</h3>
+                    <span id="sf-count" class="text-[11px] font-bold text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded-lg">0 Items</span>
                 </div>
+                <div id="sf-products" class="grid grid-cols-2 gap-4 pb-10"></div>
             </div>
         </div>
 
@@ -609,40 +599,35 @@ async def serve_frontend():
                 <h2 class="font-extrabold text-lg mb-5 text-slate-800">ပစ္စည်း အချက်အလက် ပြင်မည်</h2>
                 <input type="hidden" id="edit-prod-id">
                 <div class="space-y-4">
-                    <div class="bg-indigo-50/50 p-3 rounded-2xl border border-indigo-100">
-                        <label class="block text-xs font-black text-indigo-800 mb-1.5 flex items-center gap-1">❖ အမျိုးအစား (Menu Option)</label>
-                        <input type="text" id="edit-prod-category" placeholder="ဥပမာ - အင်္ကျီ၊ ဖိနပ်၊ လူသုံးကုန်..." list="existing-categories" class="w-full p-2.5 bg-white border border-indigo-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold text-indigo-900">
-                        <datalist id="existing-categories"></datalist>
-                        <p class="text-[9px] text-indigo-500 mt-1 font-medium">ဆိုင်ပြခန်းတွင် Menu Option ခွဲခြားပြသရန် လိုအပ်သလို ရိုက်ထည့်နိုင်ပါသည်။</p>
-                    </div>
-
                     <div>
-                        <label class="block text-xs font-bold text-slate-500 mb-1.5">ပစ္စည်း အမည်</label>
-                        <input type="text" id="edit-prod-name" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                        <label class="block text-[11px] font-bold text-slate-500 mb-1.5">ပစ္စည်း အမည်</label>
+                        <input type="text" id="edit-prod-name" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold text-slate-700">
                     </div>
-                    <div class="flex gap-3">
-                        <div class="flex-1">
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ဈေးနှုန်း (Ks)</label>
-                            <input type="number" id="edit-prod-price" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                    <div>
+                        <label class="block text-[11px] font-bold text-slate-500 mb-1.5">ပစ္စည်း အမျိုးအစား (Menu/Option သို့ ရွှေ့ရန်)</label>
+                        <input type="text" id="edit-prod-category" placeholder="ဥပမာ - အင်္ကျီ၊ ဖိနပ်၊ လူသုံးကုန်..." class="w-full p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold text-indigo-700">
+                        <p class="text-[9px] text-slate-400 mt-1.5 leading-relaxed">သင်လိုချင်သော အမျိုးအစား (Menu) အမည်ကို ရိုက်ထည့်ပါ။ ဆိုင်ခန်း (Storefront) တွင် အလိုအလျောက် Menu အဖြစ် ပေါ်လာပါမည်။</p>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-bold text-slate-500 mb-1.5">ဈေးနှုန်း (Ks)</label>
+                            <input type="number" id="edit-prod-price" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold">
                         </div>
-                        <div class="w-24">
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">Stock</label>
-                            <input type="number" id="edit-prod-stock" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                        <div>
+                            <label class="block text-[11px] font-bold text-slate-500 mb-1.5">လက်ကျန် (Stock)</label>
+                            <input type="number" id="edit-prod-stock" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold">
                         </div>
                     </div>
                 </div>
-                <button onclick="saveEditProduct()" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-6 text-sm">သိမ်းဆည်းပြီး ပြောင်းရွှေ့မည်</button>
+                <button onclick="saveEditProduct()" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-6 text-sm">သိမ်းဆည်းမည်</button>
             </div>
         </div>
 
         <div id="shop-tab" class="tab-content animate-fade-in">
             <div class="px-4 py-3 bg-indigo-50 border-b border-indigo-100 flex items-center justify-between">
                 <div class="text-[11px] font-extrabold text-indigo-900 flex items-center gap-1.5"><span class="text-sm">📍</span> ဒေသတွင်း ဈေးကွက်ရှာဖွေရန်</div>
-                <select id="local-state-filter" onchange="filterLocalState(this.value)" class="bg-white border border-indigo-200 text-indigo-700 py-1.5 px-3 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition">
-                    <option value="All">နေရာအားလုံး</option>
-                </select>
+                <select id="local-state-filter" onchange="filterLocalState(this.value)" class="bg-white border border-indigo-200 text-indigo-700 py-1.5 px-3 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition"><option value="All">နေရာအားလုံး</option></select>
             </div>
-
             <div class="p-4 bg-white shadow-sm border-b border-slate-100 mb-3 rounded-b-3xl">
                 <div class="relative mb-4">
                     <span class="absolute left-4 top-3 text-slate-400">🔍</span>
@@ -677,64 +662,34 @@ async def serve_frontend():
             <div id="vendor-prods-view" class="hidden animate-fade-up"><div id="vendor-product-list" class="space-y-3 pb-10"></div></div>
             <div id="vendor-profile-view" class="hidden animate-fade-up">
                 
-                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-10 mb-5">
-                    <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏬 ဆိုင်အချက်အလက်</h3>
-                    <div class="space-y-4">
-                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                            <label class="block text-xs font-extrabold text-slate-700 mb-2">📸 ဆိုင်မျက်နှာစာ ဓာတ်ပုံ (Store Banner 16:9)</label>
-                            <input type="file" accept="image/*" onchange="encodeBase64(this, 'prof-store-banner')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none">
-                            <input type="hidden" id="prof-store-banner">
-                            <img id="prof-store-banner-preview" class="w-full aspect-[16/9] object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
-                        </div>
+                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-8 mb-5">
+                    <h3 class="font-extrabold text-slate-800 text-lg mb-4 flex items-center gap-2">🖼️ ဆိုင်မျက်နှာဖုံးပုံ (Banner)</h3>
+                    <p class="text-[10px] text-slate-500 mb-4 font-bold">16:9 Size ရှိသော သင့်ဆိုင်၏ ဆိုင်းဘုတ် (သို့) အလှပုံကို တင်နိုင်ပါသည်။</p>
+                    <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                        <input type="file" accept="image/*" onchange="compressBannerImage(this, 'prof-store-banner')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full">
+                        <input type="hidden" id="prof-store-banner">
+                        <img id="prof-store-banner-preview" class="w-full aspect-video object-cover rounded-xl mt-3 hidden border-2 border-white shadow-md bg-slate-200">
+                    </div>
+                </div>
 
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ဆိုင်အမည် <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-name" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">တိုင်းဒေသကြီး/ပြည်နယ် <span class="text-red-500">*</span></label>
-                            <select id="prof-store-state" onchange="updateAddr('prof-store-district', mmData[this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"></select>
-                        </div>
-                        <div class="flex gap-3">
-                            <div class="flex-1">
-                                <label class="block text-xs font-bold text-slate-500 mb-1.5">ခရိုင် <span class="text-red-500">*</span></label>
-                                <select id="prof-store-district" onchange="updateAddr('prof-store-township', mmData[document.getElementById('prof-store-state').value][this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- ခရိုင် --</option></select>
-                            </div>
-                            <div class="flex-1">
-                                <label class="block text-xs font-bold text-slate-500 mb-1.5">မြို့နယ် <span class="text-red-500">*</span></label>
-                                <select id="prof-store-township" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- မြို့နယ် --</option></select>
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">ရပ်ကွက် / ကျေးရွာ <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-ward" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 mb-1.5">အိမ်အမှတ်၊ လမ်းအမည်၊ ပတ်ဝန်းကျင် <span class="text-red-500">*</span></label>
-                            <input type="text" id="prof-store-street" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
-                        </div>
+                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-10 mb-5">
+                    <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">🏬 ဆိုင်အချက်အလက် (Address)</h3>
+                    <div class="space-y-4">
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">ဆိုင်အမည် (Store Name) <span class="text-red-500">*</span></label><input type="text" id="prof-store-name" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"></div>
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">တိုင်းဒေသကြီး/ပြည်နယ် <span class="text-red-500">*</span></label><select id="prof-store-state" onchange="updateAddr('prof-store-district', mmData[this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"></select></div>
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">ခရိုင် <span class="text-red-500">*</span></label><select id="prof-store-district" onchange="updateAddr('prof-store-township', mmData[document.getElementById('prof-store-state').value][this.value])" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- ခရိုင် --</option></select></div>
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">မြို့နယ် <span class="text-red-500">*</span></label><select id="prof-store-township" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition font-bold"><option value="">-- မြို့နယ် --</option></select></div>
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">ရပ်ကွက် / ကျေးရွာ <span class="text-red-500">*</span></label><input type="text" id="prof-store-ward" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"></div>
+                        <div><label class="block text-xs font-bold text-slate-500 mb-1.5">အိမ်အမှတ်၊ လမ်းအမည်၊ ပတ်ဝန်းကျင် <span class="text-red-500">*</span></label><input type="text" id="prof-store-street" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"></div>
                     </div>
                 </div>
 
                 <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 pb-10">
                     <h3 class="font-extrabold text-slate-800 text-lg mb-5 flex items-center gap-2">💳 ငွေပေးချေမှုစနစ်များ</h3>
-                    <label class="flex items-center gap-3 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 mb-5 cursor-pointer transition hover:bg-indigo-50">
-                        <input type="checkbox" id="prof-cod" class="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500">
-                        <span class="font-bold text-sm text-indigo-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD) ကို လက်ခံမည်</span>
-                    </label>
+                    <label class="flex items-center gap-3 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 mb-5 cursor-pointer transition hover:bg-indigo-50"><input type="checkbox" id="prof-cod" class="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"><span class="font-bold text-sm text-indigo-900">အိမ်ရောက်မှ ငွေချေစနစ် (COD) ကို လက်ခံမည်</span></label>
                     <div class="space-y-5">
-                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                            <label class="block text-xs font-extrabold text-indigo-700 mb-2">KPay ဖုန်း / QR</label>
-                            <input type="text" id="prof-kpay-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition">
-                            <input type="file" accept="image/*" onchange="encodeBase64(this, 'prof-kpay-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition">
-                            <input type="hidden" id="prof-kpay-qr"><img id="prof-kpay-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
-                        </div>
-                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                            <label class="block text-xs font-extrabold text-amber-600 mb-2">WavePay ဖုန်း / QR</label>
-                            <input type="text" id="prof-wave-ph" placeholder="09xxxxxxxxx" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-amber-500 transition">
-                            <input type="file" accept="image/*" onchange="encodeBase64(this, 'prof-wave-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100 transition">
-                            <input type="hidden" id="prof-wave-qr"><img id="prof-wave-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3">
-                        </div>
+                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200"><label class="block text-xs font-extrabold text-indigo-700 mb-2">KPay ဖုန်း / QR</label><input type="text" id="prof-kpay-ph" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition"><input type="file" accept="image/*" onchange="encodeProfileQR(this, 'prof-kpay-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700"><input type="hidden" id="prof-kpay-qr"><img id="prof-kpay-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 mt-3"></div>
+                        <div class="bg-slate-50 p-4 rounded-2xl border border-slate-200"><label class="block text-xs font-extrabold text-amber-600 mb-2">WavePay ဖုန်း / QR</label><input type="text" id="prof-wave-ph" class="w-full p-3 bg-white rounded-xl border border-slate-200 mb-3 text-sm outline-none focus:ring-2 focus:ring-amber-500 transition"><input type="file" accept="image/*" onchange="encodeProfileQR(this, 'prof-wave-qr')" class="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-amber-50 file:text-amber-700"><input type="hidden" id="prof-wave-qr"><img id="prof-wave-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 mt-3"></div>
                     </div>
                     <button onclick="saveVendorProfile()" class="btn-press w-full mt-6 gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] text-sm">ဆိုင်အချက်အလက် သိမ်းမည်</button>
                 </div>
@@ -742,11 +697,11 @@ async def serve_frontend():
         </div>
 
         <div id="setup-modal" class="modal-overlay">
-            <div class="bg-white w-full max-w-sm rounded-[24px] p-6 shadow-2xl relative animate-fade-up">
+            <div class="bg-white w-full max-w-sm rounded-[24px] p-6 shadow-2xl relative animate-fade-up text-center">
                 <button onclick="document.getElementById('setup-modal').classList.remove('active')" class="btn-press absolute top-4 right-4 text-slate-400 bg-slate-100 rounded-full w-8 h-8 flex items-center justify-center font-bold text-xl">&times;</button>
-                <div class="text-4xl mb-3 animate-bounce-short">🏪</div>
-                <h2 class="font-extrabold text-xl mb-2 text-slate-800">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
-                <p class="text-sm text-slate-500 mb-6 font-medium leading-relaxed">ပစ္စည်းမတင်မီ သင်၏ **ဆိုင်အမည်၊ လမ်း/ရပ်ကွက် အပါအဝင် အသေးစိတ်လိပ်စာ** နှင့် **ငွေချေစနစ်** များကို Profile တွင် အရင်သေချာစွာ သတ်မှတ်ပေးရန် လိုအပ်ပါသည်။</p>
+                <div class="text-5xl mb-3 animate-bounce-short">🏪</div>
+                <h2 class="font-black text-xl mb-2 text-slate-800">ဆိုင်ဖွင့်ရန် လိုအပ်ချက်များ</h2>
+                <p class="text-[13px] text-slate-500 mb-6 font-bold leading-relaxed bg-slate-50 p-3 rounded-2xl border border-slate-100">ရောင်းချမှုမပြုလုပ်မီ ဆိုင်အမည်၊ အသေးစိတ်လိပ်စာ နှင့် ငွေချေစနစ်များကို Profile တွင် အရင်သတ်မှတ်ပေးပါ။ မျက်နှာဖုံးပုံ (Banner) ကိုလည်း ထည့်သွင်းနိုင်ပါသည်။</p>
                 <button onclick="document.getElementById('setup-modal').classList.remove('active'); showTab('orders-tab', 'btn-orders'); switchVendorTab('profile');" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-md text-sm">Profile Setting သို့သွားရန်</button>
             </div>
         </div>
@@ -760,6 +715,7 @@ async def serve_frontend():
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
             let localStateFilter = "All";
+            let storeVendorProducts = []; // For Storefront filtering
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -768,9 +724,7 @@ async def serve_frontend():
                 setTimeout(() => { t.className = t.className.replace("show animate-bounce-short", ""); }, 3200);
             }
 
-            async function apiFetch(url, options = {}) {
-                return fetch(url, { ...options, headers: { 'X-Telegram-Init-Data': initData, 'Content-Type': 'application/json', ...options.headers }});
-            }
+            async function apiFetch(url, options = {}) { return fetch(url, { ...options, headers: { 'X-Telegram-Init-Data': initData, 'Content-Type': 'application/json', ...options.headers }}); }
 
             async function initApp() {
                 tg.expand(); tg.ready();
@@ -788,10 +742,11 @@ async def serve_frontend():
                     document.getElementById('prof-store-ward').value = currentUser.store_ward || '';
                     document.getElementById('prof-store-street').value = currentUser.store_street || '';
                     
+                    // Display existing Banner in settings
                     if(currentUser.store_banner) {
                         document.getElementById('prof-store-banner').value = currentUser.store_banner;
-                        const prev = document.getElementById('prof-store-banner-preview');
-                        prev.src = currentUser.store_banner; prev.classList.remove('hidden');
+                        document.getElementById('prof-store-banner-preview').src = currentUser.store_banner;
+                        document.getElementById('prof-store-banner-preview').classList.remove('hidden');
                     }
                     
                     if(currentUser.store_state) {
@@ -801,13 +756,10 @@ async def serve_frontend():
                             if(currentUser.store_district) {
                                 document.getElementById('prof-store-district').value = currentUser.store_district;
                                 updateAddr('prof-store-township', mmData[currentUser.store_state][currentUser.store_district]);
-                                setTimeout(() => {
-                                    if(currentUser.store_township) document.getElementById('prof-store-township').value = currentUser.store_township;
-                                }, 100);
+                                setTimeout(() => { if(currentUser.store_township) document.getElementById('prof-store-township').value = currentUser.store_township; }, 50);
                             }
-                        }, 100);
+                        }, 50);
                     }
-
                     if (currentUser.role === 'vendor' || currentUser.role === 'admin') { document.getElementById('btn-orders').classList.remove('hidden'); }
                     loadProducts();
                 } catch (e) { showToast("Authentication Failed"); }
@@ -816,8 +768,7 @@ async def serve_frontend():
             async function fetchNotifications() {
                 try {
                     const res = await apiFetch('/api/notifications'); const notis = await res.json();
-                    const badge = document.getElementById('noti-count');
-                    const unread = notis.filter(n => !n.is_read).length;
+                    const badge = document.getElementById('noti-count'); const unread = notis.filter(n => !n.is_read).length;
                     if(unread > 0) { badge.innerText = unread; badge.classList.remove('hidden'); badge.classList.add('animate-bounce-short'); } else { badge.classList.add('hidden'); }
                     const list = document.getElementById('noti-list');
                     if(notis.length === 0) return list.innerHTML = `<div class="text-center text-slate-400 py-10 font-medium">အသိပေးချက် မရှိသေးပါ</div>`;
@@ -827,23 +778,14 @@ async def serve_frontend():
             function openNotiModal() { if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); document.getElementById('noti-modal').classList.add('active'); apiFetch('/api/notifications/read', { method: 'POST' }).then(() => document.getElementById('noti-count').classList.add('hidden')); }
             function closeNotiModal(e) { if(e.target === document.getElementById('noti-modal')) { document.getElementById('noti-modal').classList.remove('active'); fetchNotifications(); } }
 
-            async function fetchLocationData() { 
-                try { 
-                    const res = await fetch('/api/locations'); mmData = await res.json(); 
-                    document.getElementById('prof-store-state').innerHTML = getSelectOptions(mmData, "တိုင်း/ပြည်နယ် ရွေးရန်");
-                } catch(e) {} 
-            }
-            function getSelectOptions(dataObj, defaultText) {
-                let html = `<option value="">-- ${defaultText} --</option>`;
-                if(dataObj) { if(Array.isArray(dataObj)) dataObj.forEach(v => html += `<option value="${v}">${v}</option>`); else for(let k in dataObj) html += `<option value="${k}">${k}</option>`; }
-                return html;
-            }
+            async function fetchLocationData() { try { const res = await fetch('/api/locations'); mmData = await res.json(); document.getElementById('prof-store-state').innerHTML = getSelectOptions(mmData, "တိုင်း/ပြည်နယ် ရွေးရန်"); } catch(e) {} }
+            function getSelectOptions(dataObj, defaultText) { let html = `<option value="">-- ${defaultText} --</option>`; if(dataObj) { if(Array.isArray(dataObj)) dataObj.forEach(v => html += `<option value="${v}">${v}</option>`); else for(let k in dataObj) html += `<option value="${k}">${k}</option>`; } return html; }
+            
             function showTab(tabId, btnId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 document.querySelectorAll('.tab-content').forEach(el => { el.classList.add('hidden'); el.classList.remove('animate-fade-in'); });
                 document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                const tab = document.getElementById(tabId);
-                tab.classList.remove('hidden'); void tab.offsetWidth; tab.classList.add('animate-fade-in');
+                const tab = document.getElementById(tabId); tab.classList.remove('hidden'); void tab.offsetWidth; tab.classList.add('animate-fade-in');
                 if(btnId) document.getElementById(btnId).classList.add('active');
                 if(tabId === 'history-tab') loadBuyerOrders(); if(tabId === 'orders-tab') switchVendorTab('dash'); if(tabId === 'cart-tab') renderGroupedCart();
                 window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -851,22 +793,41 @@ async def serve_frontend():
 
             function triggerSell() { if(!currentUser.vendor_ready) document.getElementById('setup-modal').classList.add('active'); else tg.showConfirm("Bot Chat ထဲသို့ ပစ္စည်းပုံနှင့် ဈေးနှုန်းရေးပို့ပါ။ အခုပဲ App ကိုပိတ်ပြီး ပို့မလား?", (r) => { if(r) tg.close(); }); }
             
-            function encodeBase64(el, targetId) {
-                let file = el.files[0]; if(!file) return; 
-                let reader = new FileReader();
+            function encodeProfileQR(el, targetId) {
+                let f = el.files[0]; if(!f) return; let r = new FileReader();
+                r.onloadend = function() { document.getElementById(targetId).value = r.result; let preview = document.getElementById(targetId + '-preview'); if(preview) { preview.src = r.result; preview.classList.remove('hidden'); } }; r.readAsDataURL(f);
+            }
+
+            function compressAndEncodeSlip(el, targetId) {
+                let file = el.files[0]; if(!file) return; let reader = new FileReader();
                 reader.onloadend = function(e) { 
                     let img = new Image();
                     img.onload = function() {
                         let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
-                        let maxW = targetId === 'prof-store-banner' ? 1200 : 800; // Allow wider for banner
-                        let maxH = targetId === 'prof-store-banner' ? 675 : 800; 
-                        let width = img.width; let height = img.height;
+                        let maxW = 800; let maxH = 800; let width = img.width; let height = img.height;
                         if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } else { if (height > maxH) { width *= maxH / height; height = maxH; } }
                         canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
-                        let dataUrl = canvas.toDataURL('image/jpeg', 0.8); 
+                        let dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
                         document.getElementById(targetId).value = dataUrl; 
-                        let preview = document.getElementById(targetId + '-preview');
-                        if(preview) { preview.src = dataUrl; preview.classList.remove('hidden'); }
+                        let preview = document.getElementById(targetId + '-preview'); if(preview) { preview.src = dataUrl; preview.classList.remove('hidden'); }
+                    }; img.src = e.target.result;
+                }; reader.readAsDataURL(file);
+            }
+
+            // NEW: Banner specific compression (Prioritizes width for 16:9)
+            function compressBannerImage(el, targetId) {
+                let file = el.files[0]; if(!file) return; let reader = new FileReader();
+                reader.onloadend = function(e) { 
+                    let img = new Image();
+                    img.onload = function() {
+                        let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
+                        let maxW = 1000; // Allow wider resolution for banner
+                        let width = img.width; let height = img.height;
+                        if (width > maxW) { height *= maxW / width; width = maxW; }
+                        canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
+                        let dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
+                        document.getElementById(targetId).value = dataUrl; 
+                        let preview = document.getElementById(targetId + '-preview'); if(preview) { preview.src = dataUrl; preview.classList.remove('hidden'); }
                     }; img.src = e.target.result;
                 }; reader.readAsDataURL(file);
             }
@@ -880,23 +841,17 @@ async def serve_frontend():
                 const sStreet = document.getElementById('prof-store-street').value.trim();
                 const sBanner = document.getElementById('prof-store-banner').value;
 
-                if(!sName || !sState || !sDist || !sTsp || !sWard || !sStreet) {
-                    return showToast("⚠️ ဆိုင်အမည်၊ လမ်း/ရပ်ကွက် နှင့် တည်နေရာ အားလုံးကို ပြည့်စုံစွာ ဖြည့်ပါ။");
-                }
+                if(!sName || !sState || !sDist || !sTsp || !sWard || !sStreet) return showToast("⚠️ ဆိုင်အမည် နှင့် လိပ်စာ အားလုံးကို ပြည့်စုံစွာ ဖြည့်ပါ။");
 
                 tg.MainButton.showProgress();
                 const payload = { 
-                    store_name: sName, store_state: sState, store_district: sDist, store_township: sTsp,
-                    store_ward: sWard, store_street: sStreet, store_banner: sBanner,
-                    accept_cod: document.getElementById('prof-cod').checked, 
-                    kpay_phone: document.getElementById('prof-kpay-ph').value, wave_phone: document.getElementById('prof-wave-ph').value, 
+                    store_name: sName, store_state: sState, store_district: sDist, store_township: sTsp, store_ward: sWard, store_street: sStreet, store_banner: sBanner,
+                    accept_cod: document.getElementById('prof-cod').checked, kpay_phone: document.getElementById('prof-kpay-ph').value, wave_phone: document.getElementById('prof-wave-ph').value, 
                     kpay_qr: document.getElementById('prof-kpay-qr').value, wave_qr: document.getElementById('prof-wave-qr').value 
                 };
-                const res = await apiFetch('/api/vendor/profile', { method: 'POST', body: JSON.stringify(payload) }); 
-                tg.MainButton.hideProgress();
+                const res = await apiFetch('/api/vendor/profile', { method: 'POST', body: JSON.stringify(payload) }); tg.MainButton.hideProgress();
                 if(res.ok) { 
-                    showToast("✅ ဆိုင်အချက်အလက် သိမ်းဆည်းပြီးပါပြီ။"); 
-                    currentUser.vendor_ready = true; currentUser.store_name = sName; currentUser.store_state = sState;
+                    showToast("✅ ဆိုင်အချက်အလက် သိမ်းဆည်းပြီးပါပြီ။"); currentUser.vendor_ready = true; currentUser.store_name = sName; currentUser.store_state = sState; currentUser.store_banner = sBanner;
                     document.getElementById('btn-orders').classList.remove('hidden'); 
                 }
             }
@@ -914,9 +869,7 @@ async def serve_frontend():
                 }
 
                 let sf = document.getElementById('local-state-filter'); let currSfVal = sf.value;
-                let sfHtml = `<option value="All">နေရာအားလုံး</option>`;
-                data.states.forEach(s => { sfHtml += `<option value="${s}" ${currSfVal === s ? 'selected' : ''}>${s}</option>`; });
-                sf.innerHTML = sfHtml;
+                let sfHtml = `<option value="All">နေရာအားလုံး</option>`; data.states.forEach(s => { sfHtml += `<option value="${s}" ${currSfVal === s ? 'selected' : ''}>${s}</option>`; }); sf.innerHTML = sfHtml;
 
                 if(allProducts.length === 0) return document.getElementById('product-list').innerHTML = `<div class="col-span-2 text-center py-12 text-slate-400 font-medium animate-fade-up">ပစ္စည်းရှာမတွေ့ပါ 🔍</div>`;
                 document.getElementById('product-list').innerHTML = allProducts.map((p, index) => generateProductCardHTML(p, index)).join('');
@@ -937,10 +890,7 @@ async def serve_frontend():
                         <div class="mb-2">
                             <div class="flex justify-between items-center mb-1 gap-1"><div class="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider line-clamp-1">🏪 ${p.vendor_name}</div>${locBadge}</div>
                             <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
-                            <div class="flex justify-between items-end mb-2">
-                                <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
-                                <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
-                            </div>
+                            <div class="flex justify-between items-end mb-2"><div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div><div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div></div>
                         </div>
                         <div class="flex gap-1.5 mt-1">
                             <button onclick='openStore(${p.vendor_id})' class="btn-press flex-1 bg-white border border-slate-200 text-slate-600 py-2.5 rounded-xl font-bold text-[10px] shadow-sm hover:bg-slate-50">🏪 ဆိုင်ပြခန်း</button>
@@ -953,58 +903,58 @@ async def serve_frontend():
             function filterCategory(cat) { currentCategory = cat; loadProducts(document.getElementById('search-box').value); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
-            // STOREFRONT LOGIC (ENHANCED)
-            let currentStoreProducts = [];
-            
+            // =====================================
+            // NEW STOREFRONT & CATEGORY MENU LOGIC
+            // =====================================
             async function openStore(vendorId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 tg.MainButton.showProgress();
                 try {
                     const res = await apiFetch(`/api/store/${vendorId}`); const data = await res.json();
-                    currentStoreProducts = data.products;
                     
-                    document.getElementById('storefront-name').innerText = data.store.name;
+                    // Render 16:9 Banner Header
+                    document.getElementById('sf-name').innerText = data.store.name;
                     const fullAddr = data.store.state ? `${data.store.street ? data.store.street+'၊ ':''}${data.store.ward ? data.store.ward+'၊ ':''}${data.store.township}၊ ${data.store.state}` : 'တည်နေရာ မသတ်မှတ်ရသေးပါ';
-                    document.getElementById('storefront-location').innerText = fullAddr;
+                    document.getElementById('sf-location').innerText = fullAddr;
+                    if(data.store.banner) { document.getElementById('sf-banner-img').src = data.store.banner; } 
+                    else { document.getElementById('sf-banner-img').src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMSI+PC9yZWN0Pgo8cGF0aCBkPSJNMCAwTDggOFpNOCAwTDAgOFoiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLW9wYWNpdHk9IjAuMDUiIHN0cm9rZS13aWR0aD0iMSI+PC9wYXRoPgo8L3N2Zz4="; } // Default Pattern
+
+                    storeVendorProducts = data.products; // Save locally for filtering
                     
-                    // Fixed 16:9 Header Background
-                    const defaultBg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='450'%3E%3Crect width='800' height='450' fill='%231e293b'/%3E%3C/svg%3E";
-                    const bannerUrl = data.store.banner || defaultBg;
-                    document.getElementById('storefront-header-bg').style.backgroundImage = `url('${bannerUrl}')`;
+                    // Extract unique categories (Menus) from this vendor's products
+                    let sfCategories = ["အားလုံး"];
+                    storeVendorProducts.forEach(p => { if(p.category && !sfCategories.includes(p.category)) sfCategories.push(p.category); });
                     
-                    // Extract Menu Categories
-                    const cats = [...new Set(currentStoreProducts.map(p => p.category || 'General'))];
-                    let catHtml = `<button onclick="filterStoreMenu('All', this)" class="store-menu-chip active px-4 py-2 rounded-full text-xs font-bold bg-indigo-600 text-white shadow-md border border-indigo-600 whitespace-nowrap transition-all btn-press">အားလုံး</button>`;
-                    cats.forEach(c => {
-                        catHtml += `<button onclick="filterStoreMenu('${c}', this)" class="store-menu-chip px-4 py-2 rounded-full text-xs font-bold bg-white text-slate-600 shadow-sm border border-slate-200 whitespace-nowrap transition-all btn-press">${c}</button>`;
-                    });
-                    document.getElementById('storefront-categories').innerHTML = catHtml;
-                    
-                    filterStoreMenu('All'); // Initial render
-                    
+                    // Render Horizontal Category Menu Options
+                    let menuHtml = sfCategories.map(cat => `<button onclick="filterStoreMenu('${cat}')" id="sf-menu-btn-${cat}" class="btn-press sf-menu-chip ${cat === 'အားလုံး' ? 'active' : ''}">${cat}</button>`).join('');
+                    document.getElementById('sf-menu-container').innerHTML = menuHtml;
+
+                    // Render all products initially
+                    filterStoreMenu('အားလုံး');
+
                     const storeView = document.getElementById('storefront-view');
-                    storeView.classList.remove('closing'); storeView.classList.add('active'); 
+                    storeView.classList.remove('closing'); storeView.classList.add('active'); window.scrollTo({ top: 0 });
                 } catch(e) { showToast("ဆိုင်အချက်အလက် ယူ၍မရပါ။"); } finally { tg.MainButton.hideProgress(); }
             }
 
-            function filterStoreMenu(cat, btnEl = null) {
-                if(btnEl) {
-                    document.querySelectorAll('.store-menu-chip').forEach(el => {
-                        el.classList.remove('bg-indigo-600', 'text-white', 'border-indigo-600', 'shadow-md');
-                        el.classList.add('bg-white', 'text-slate-600', 'border-slate-200', 'shadow-sm');
-                    });
-                    btnEl.classList.add('bg-indigo-600', 'text-white', 'border-indigo-600', 'shadow-md');
-                    btnEl.classList.remove('bg-white', 'text-slate-600', 'border-slate-200', 'shadow-sm');
-                }
+            function filterStoreMenu(category) {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 
-                document.getElementById('storefront-current-menu-title').innerHTML = `<span class="text-indigo-500">❖</span> ${cat === 'All' ? 'အားလုံး' : cat}`;
-                const filtered = cat === 'All' ? currentStoreProducts : currentStoreProducts.filter(p => (p.category || 'General') === cat);
-                document.getElementById('storefront-count').innerText = `${filtered.length} Items`;
+                // Update active button styles
+                document.querySelectorAll('.sf-menu-chip').forEach(el => el.classList.remove('active'));
+                const activeBtn = document.getElementById(`sf-menu-btn-${category}`);
+                if(activeBtn) activeBtn.classList.add('active');
+
+                // Filter products
+                let filtered = category === 'အားလုံး' ? storeVendorProducts : storeVendorProducts.filter(p => p.category === category);
+                
+                document.getElementById('sf-current-menu-title').innerText = category === 'အားလုံး' ? "ပစ္စည်းများ အားလုံး" : category;
+                document.getElementById('sf-count').innerText = `${filtered.length} Items`;
                 
                 if(filtered.length === 0) {
-                    document.getElementById('storefront-products').innerHTML = `<div class="col-span-2 text-center py-10 text-slate-400 font-medium">ပစ္စည်းမရှိသေးပါ</div>`;
+                    document.getElementById('sf-products').innerHTML = `<div class="col-span-2 text-center py-10 text-slate-400 font-bold">ယခု အမျိုးအစားထဲတွင် ပစ္စည်းမရှိသေးပါ</div>`;
                 } else {
-                    document.getElementById('storefront-products').innerHTML = filtered.map((p, index) => generateProductCardHTML(p, index)).join('');
+                    document.getElementById('sf-products').innerHTML = filtered.map((p, index) => generateProductCardHTML(p, index)).join('');
                 }
             }
 
@@ -1035,43 +985,19 @@ async def serve_frontend():
                     let itemsHtml = g.items.map(i => `
                     <div class="flex justify-between items-center mb-3 bg-white p-3 rounded-2xl shadow-[0_2px_8px_rgba(0,0,0,0.02)] border border-slate-100">
                         <div class="flex-1 pr-3"><div class="text-[13px] font-bold text-slate-800 line-clamp-1">${i.name}</div><div class="text-indigo-600 text-[12px] font-black mt-0.5">${i.price.toLocaleString()} Ks</div></div>
-                        <div class="flex items-center gap-3 bg-slate-50 rounded-xl shadow-inner px-2 py-1 border border-slate-100">
-                            <button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button><span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span><button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button>
-                        </div>
+                        <div class="flex items-center gap-3 bg-slate-50 rounded-xl shadow-inner px-2 py-1 border border-slate-100"><button onclick="changeQty(${i.cart_idx}, -1)" class="btn-press w-7 h-7 flex items-center justify-center text-slate-500 font-bold bg-white rounded-lg shadow-sm">-</button><span class="text-xs font-black w-3 text-center text-slate-700">${i.qty}</span><button onclick="changeQty(${i.cart_idx}, 1)" class="btn-press w-7 h-7 flex items-center justify-center text-indigo-600 font-bold bg-white rounded-lg shadow-sm">+</button></div>
                     </div>`).join('');
                     
-                    let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4">
-                        <label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label>
-                        <select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
+                    let payHtml = `<div class="mt-4 border-t border-slate-100 pt-4"><label class="text-xs font-bold text-slate-500 mb-2 block">ငွေချေစနစ်ရွေးချယ်ရန်</label><select id="pay_method_${vid}" onchange="togglePayMethod(${vid})" class="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-[13px] font-bold mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition text-slate-700">`;
                     if(g.vendor_cod || (!g.kpay_phone && !g.wave_phone)) payHtml += `<option value="COD" selected>🏠 အိမ်ရောက်မှ ငွေချေမည် (COD)</option>`;
                     if(g.kpay_phone || g.kpay_qr) payHtml += `<option value="KPay">📲 KPay ဖြင့် ငွေလွှဲမည်</option>`;
                     if(g.wave_phone || g.wave_qr) payHtml += `<option value="Wave">📲 WavePay ဖြင့် ငွေလွှဲမည်</option>`;
-                    payHtml += `</select>
-                    <div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 hidden animate-fade-in">
-                        <div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="" class="max-h-36 rounded-xl shadow-md border border-white hidden"></div>
-                        <p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">-</p>
-                        <div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden"><div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div><label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label><input type="file" accept="image/*" id="slip_input_${vid}" onchange="encodeBase64(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none"><input type="hidden" id="slip_base64_${vid}"><img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2"></div>
-                        <input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ဂဏန်း ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300">
-                    </div></div>`;
+                    payHtml += `</select><div id="qr_box_${vid}" class="bg-indigo-50/50 p-4 rounded-2xl mb-4 border border-indigo-100 hidden animate-fade-in"><div class="flex justify-center mb-3"><img id="qr_img_${vid}" src="" class="max-h-36 rounded-xl shadow-md border border-white hidden"></div><p id="qr_phone_${vid}" class="text-center font-mono font-black text-xl text-indigo-900 tracking-wider bg-white py-2 rounded-xl border border-indigo-100 shadow-sm">-</p><div class="mt-4 bg-white p-3 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden"><div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div><label class="block text-[11px] font-extrabold text-indigo-700 mb-2 pl-2">📸 ငွေလွှဲပြေစာ (Screenshot) တင်ရန် <span class="text-red-500">*လိုအပ်ပါသည်</span></label><input type="file" accept="image/*" id="slip_input_${vid}" onchange="compressAndEncodeSlip(this, 'slip_base64_${vid}')" class="text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition w-full outline-none"><input type="hidden" id="slip_base64_${vid}"><img id="slip_base64_${vid}-preview" class="h-24 object-cover rounded-xl hidden border border-slate-200 shadow-sm mt-3 ml-2"></div><input type="text" id="tx_id_${vid}" placeholder="ငွေလွှဲပြေစာ (Tx ID) ဂဏန်း ၆ လုံး..." class="w-full mt-3 p-3 border border-indigo-200 rounded-xl text-sm text-center outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-900 placeholder-indigo-300"></div></div>`;
                     
-                    html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5">
-                        <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50"><div><h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3><div class="text-[9px] font-bold text-slate-400 mt-1">📍 ${g.vendor_state || 'တည်နေရာ မသတ်မှတ်ရသေးပါ'}</div></div><span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span></div>
-                        ${itemsHtml}${payHtml}
-                        <button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button>
-                    </div>`;
+                    html += `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-sm border border-slate-100 mb-5"><div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-50"><div><h3 class="font-extrabold text-slate-800 flex items-center gap-1.5"><span class="text-lg">🏪</span> ${g.vendor_name}</h3><div class="text-[9px] font-bold text-slate-400 mt-1">📍 ${g.vendor_state || 'တည်နေရာ မသတ်မှတ်ရသေးပါ'}</div></div><span class="text-[15px] font-black gradient-text">${g.total.toLocaleString()} Ks</span></div>${itemsHtml}${payHtml}<button onclick="checkoutVendor(${vid})" class="btn-press w-full gradient-bg text-white font-bold py-3.5 rounded-xl shadow-[0_4px_12px_rgba(99,102,241,0.3)] mt-2 text-sm tracking-wide">အော်ဒါတင်မည်</button></div>`;
                 }
                 
-                html += `<div class="animate-fade-up bg-slate-50 border border-slate-200 p-5 rounded-3xl mb-5 mt-8 shadow-inner">
-                    <h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> ပို့ဆောင်ရမည့် လိပ်စာအပြည့်အစုံ</h3>
-                    <div class="space-y-3.5">
-                        <select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></select>
-                        <select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- ခရိုင် --</option></select>
-                        <select id="sel-township" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- မြို့နယ် --</option></select>
-                        <input type="text" id="input-ward" placeholder="ရပ်ကွက် / ကျေးရွာ အမည်..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
-                        <input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်၊ အထင်ကရနေရာ..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
-                        <input type="tel" id="input-phone" placeholder="ဆက်သွယ်ရမည့် ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition">
-                    </div>
-                </div>`;
+                html += `<div class="animate-fade-up bg-slate-50 border border-slate-200 p-5 rounded-3xl mb-5 mt-8 shadow-inner"><h3 class="font-extrabold text-slate-700 mb-4 text-sm flex items-center gap-2"><span class="text-lg">📍</span> ပို့ဆောင်ရမည့် လိပ်စာအပြည့်အစုံ</h3><div class="space-y-3.5"><select id="sel-state" onchange="updateAddr('sel-district', mmData[this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></select><select id="sel-district" onchange="updateAddr('sel-township', mmData[document.getElementById('sel-state').value][this.value])" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- ခရိုင် --</option></select><select id="sel-township" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><option value="">-- မြို့နယ် --</option></select><input type="text" id="input-ward" placeholder="ရပ်ကွက် / ကျေးရွာ အမည်..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><input type="text" id="input-street" placeholder="အိမ်အမှတ်၊ လမ်းအမည်၊ အထင်ကရနေရာ..." class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"><input type="tel" id="input-phone" placeholder="ဆက်သွယ်ရမည့် ဖုန်းနံပါတ်..." value="${currentUser.phone||''}" class="w-full p-3 bg-white rounded-xl border border-slate-200 text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition"></div></div>`;
                 document.getElementById('cart-content-wrapper').innerHTML = html; 
                 document.getElementById('sel-state').innerHTML = getSelectOptions(mmData, "တိုင်းဒေသကြီး/ပြည်နယ်");
                 for(let vid in vGroups) togglePayMethod(vid, vGroups[vid]);
@@ -1093,17 +1019,10 @@ async def serve_frontend():
 
             async function checkoutVendor(vid) {
                 const st = document.getElementById('sel-state').value, dist = document.getElementById('sel-district').value, tsp = document.getElementById('sel-township').value, ward = document.getElementById('input-ward').value.trim(), str = document.getElementById('input-street').value.trim(), ph = document.getElementById('input-phone').value.trim();
-                
                 if(!st || !dist || !tsp || !ward || !str || !ph) return showToast("ရပ်ကွက်နှင့် လမ်းနာမည် အပါအဝင် လိပ်စာအပြည့်အစုံကို သေချာဖြည့်ပါ။");
                 
-                const m = document.getElementById(`pay_method_${vid}`).value; 
-                let txId = "", slipBase64 = "";
-                
-                if(m !== "COD") { 
-                    txId = document.getElementById(`tx_id_${vid}`).value.trim(); 
-                    slipBase64 = document.getElementById(`slip_base64_${vid}`).value;
-                    if(!slipBase64) return showToast("⚠️ လုံခြုံရေးအရ ငွေလွှဲပြေစာ (Screenshot) ပုံတင်ပေးရန် မဖြစ်မနေ လိုအပ်ပါသည်။"); 
-                }
+                const m = document.getElementById(`pay_method_${vid}`).value; let txId = "", slipBase64 = "";
+                if(m !== "COD") { txId = document.getElementById(`tx_id_${vid}`).value.trim(); slipBase64 = document.getElementById(`slip_base64_${vid}`).value; if(!slipBase64) return showToast("⚠️ လုံခြုံရေးအရ ငွေလွှဲပြေစာ (Screenshot) ပုံတင်ပေးရန် မဖြစ်မနေ လိုအပ်ပါသည်။"); }
                 
                 tg.MainButton.showProgress();
                 try {
@@ -1127,8 +1046,7 @@ async def serve_frontend():
             
             function switchVendorTab(tab) {
                 ['dash', 'prods', 'profile'].forEach(t => { 
-                    const btn = document.getElementById(`v-tab-${t}`);
-                    btn.className = tab === t ? 'btn-press flex-1 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.05)] py-2.5 rounded-xl text-sm font-extrabold text-indigo-600 transition-all' : 'btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all hover:bg-slate-200/50'; 
+                    const btn = document.getElementById(`v-tab-${t}`); btn.className = tab === t ? 'btn-press flex-1 bg-white shadow-[0_2px_8px_rgba(0,0,0,0.05)] py-2.5 rounded-xl text-sm font-extrabold text-indigo-600 transition-all' : 'btn-press flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-500 transition-all hover:bg-slate-200/50'; 
                     document.getElementById(`vendor-${t}-view`).style.display = tab === t ? 'block' : 'none'; 
                 });
                 if(tab === 'dash') loadVendorOrders(); else if(tab === 'prods') loadVendorProducts();
@@ -1138,66 +1056,37 @@ async def serve_frontend():
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
                     const animDelay = (index % 10) * 0.1; let slipBtnHtml = ''; if(o.slip_img) slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
-                    return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s"><div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div><div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed"><div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div><div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} ${slipBtnHtml}</div><div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div></div><select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`
-                }).join('');
+                    return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s"><div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div><div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed"><div class="flex items-center gap-1.5"><span class="text-slate-400">👤</span> ${o.buyer}</div><div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} ${slipBtnHtml}</div><div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div></div><select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition"><option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option><option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option><option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option><option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option></select></div>`}).join('');
             }
             
             function viewSlip(imgData) { document.getElementById('slip-viewer-img').src = imgData; document.getElementById('slip-viewer-modal').classList.add('active'); }
             function closeSlipModal() { document.getElementById('slip-viewer-modal').classList.remove('active'); setTimeout(() => { document.getElementById('slip-viewer-img').src = ''; }, 300); }
-
             function updateOrderStatus(id, st, selectElement) {
                 const statusNames = { 'pending': '⏳ စစ်ဆေးဆဲ', 'approved': '📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)', 'shipped': '🚚 ပို့ဆောင်လိုက်ပြီ', 'delivered': '✅ ရောက်ရှိပါပြီ', 'cancelled': '❌ ပယ်ဖျက်မည်' };
-                tg.showConfirm(`ဤအော်ဒါကို '${statusNames[st]}' အဖြစ် အတည်ပြုပြောင်းလဲမှာ သေချာပါသလား?`, async function(confirm) {
-                    if(confirm) {
-                        tg.MainButton.showProgress();
-                        try { const res = await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); if(res.ok) { showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); } else { showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။"); } } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); }
-                        tg.MainButton.hideProgress(); loadVendorOrders();
-                    } else { loadVendorOrders(); }
-                });
+                tg.showConfirm(`ဤအော်ဒါကို '${statusNames[st]}' အဖြစ် အတည်ပြုပြောင်းလဲမှာ သေချာပါသလား?`, async function(confirm) { if(confirm) { tg.MainButton.showProgress(); try { const res = await apiFetch(`/api/vendor/orders/${id}/status?status=${st}`, {method:'POST'}); if(res.ok) { showToast("✅ အခြေအနေ ပြောင်းလဲပြီးပါပြီ"); } else { showToast("⚠️ လုပ်ပိုင်ခွင့် မရှိပါ သို့မဟုတ် အမှားအယွင်းဖြစ်နေပါသည်။"); } } catch(e) { showToast("⚠️ အင်တာနက်ချိတ်ဆက်မှု ပြတ်တောက်သွားပါသည်။"); } tg.MainButton.hideProgress(); loadVendorOrders(); } else { loadVendorOrders(); } });
             }
             
-            let vendorProducts = [];
             async function loadVendorProducts() {
-                const res = await apiFetch('/api/vendor/products'); vendorProducts = await res.json();
-                
-                // Extract Unique Categories for the Datalist dropdown in Quick Edit
-                const cats = [...new Set(vendorProducts.map(p => p.category || 'General'))];
-                document.getElementById('existing-categories').innerHTML = cats.map(c => `<option value="${c}">`).join('');
-
+                const res = await apiFetch('/api/vendor/products'); const vendorProducts = await res.json();
                 document.getElementById('vendor-product-list').innerHTML = vendorProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; const animDelay = (index % 10) * 0.1;
-                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${animDelay}s">
-                        <img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50">
-                        <div class="flex-1">
-                            <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div>
-                            <div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div>
-                            <div class="flex items-center gap-1">
-                                <span class="text-[9px] text-slate-500 font-extrabold bg-slate-100 px-1.5 py-0.5 rounded-md border border-slate-200">📦: ${p.stock}</span>
-                                <span class="text-[9px] text-indigo-500 font-extrabold bg-indigo-50 px-1.5 py-0.5 rounded-md border border-indigo-100 truncate max-w-[80px]">❖ ${p.category||'General'}</span>
-                            </div>
-                        </div>
-                        <div class="flex flex-col gap-2"><button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button><button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button></div>
-                    </div>`
+                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 flex gap-4 items-center mb-3" style="animation-delay: ${animDelay}s"><img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50"><div class="flex-1"><div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div><div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div><div class="flex flex-wrap gap-1 mt-1"><span class="text-[10px] text-slate-500 font-extrabold bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">📦 Stock: ${p.stock}</span><span class="text-[10px] text-indigo-500 font-extrabold bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 line-clamp-1">🏷️ Menu: ${p.category}</span></div></div><div class="flex flex-col gap-2"><button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-indigo-100">ပြင်မည်</button><button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press text-red-500 bg-red-50 px-4 py-1.5 rounded-xl text-[11px] font-extrabold transition hover:bg-red-100">ဖျက်မည်</button></div></div>`
                 }).join('');
             }
 
+            // NEW: Added Edit Product Category Input
             function openEditModal(prod) {
-                document.getElementById('edit-prod-id').value = prod.id; 
-                document.getElementById('edit-prod-category').value = prod.category || 'General';
-                document.getElementById('edit-prod-name').value = prod.name; 
-                document.getElementById('edit-prod-price').value = prod.price; 
-                document.getElementById('edit-prod-stock').value = prod.stock; 
+                document.getElementById('edit-prod-id').value = prod.id; document.getElementById('edit-prod-name').value = prod.name; document.getElementById('edit-prod-price').value = prod.price; document.getElementById('edit-prod-stock').value = prod.stock; 
+                document.getElementById('edit-prod-category').value = prod.category || ''; // Category handling
                 document.getElementById('edit-product-modal').classList.add('active');
             }
             function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
 
             async function saveEditProduct() {
-                const id = document.getElementById('edit-prod-id').value, cat = document.getElementById('edit-prod-category').value.trim(), name = document.getElementById('edit-prod-name').value.trim(), price = document.getElementById('edit-prod-price').value, stock = document.getElementById('edit-prod-stock').value;
-                if(!name || !price || !stock || !cat) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
-                tg.MainButton.showProgress(); 
-                const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock, category: cat }) }); 
-                tg.MainButton.hideProgress();
-                if(res.ok) { showToast("✅ ပစ္စည်းအား သတ်မှတ်ထားသော Menu သို့ ပြောင်းရွှေ့ပြီးပါပြီ"); closeEditModal(); loadVendorProducts(); loadProducts(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
+                const id = document.getElementById('edit-prod-id').value, name = document.getElementById('edit-prod-name').value.trim(), price = document.getElementById('edit-prod-price').value, stock = document.getElementById('edit-prod-stock').value, category = document.getElementById('edit-prod-category').value.trim();
+                if(!name || !price || !stock || !category) return showToast("အချက်အလက် ပြည့်စုံစွာ ဖြည့်ပါ။");
+                tg.MainButton.showProgress(); const res = await apiFetch(`/api/vendor/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: name, price: price, stock: stock, category: category }) }); tg.MainButton.hideProgress();
+                if(res.ok) { showToast("✅ ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ"); closeEditModal(); loadVendorProducts(); loadProducts(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
             }
 
             window.onload = initApp;
