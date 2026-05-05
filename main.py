@@ -64,8 +64,8 @@ class User(Base):
     store_state = Column(String, default="")
     store_district = Column(String, default="")
     store_township = Column(String, default="")
-    store_ward = Column(String, default="")    # NEW: ရပ်ကွက် / ကျေးရွာ
-    store_street = Column(String, default="")  # NEW: လမ်းအမည် / ပတ်ဝန်းကျင်
+    store_ward = Column(String, default="")       # NEW: ရပ်ကွက် / ကျေးရွာ
+    store_street = Column(String, default="")     # NEW: လမ်းအမည် / ပတ်ဝန်းကျင်အမည်
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -123,8 +123,8 @@ try:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_state TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_district TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_township TEXT DEFAULT ''"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))    # Auto-add new column
-        conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))  # Auto-add new column
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))      # Auto-add new column
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))    # Auto-add new column
 except Exception: pass
 
 def get_db():
@@ -169,7 +169,7 @@ def get_telegram_image(file_id: str):
 # ==========================================
 @app.get("/api/auth")
 def authenticate_user(user: User = Depends(get_current_user)):
-    # Check if BOTH payment and basic store info are set
+    # Check if BOTH payment and store info are set
     has_payment = user.accept_cod or user.kpay_phone or user.wave_phone or user.kpay_qr or user.wave_qr
     has_store = bool(user.store_name and user.store_state)
     vendor_ready = has_payment and has_store
