@@ -7,7 +7,7 @@ import datetime
 import time
 import base64
 import requests
-from urllib.parse import parse_qs
+from urllib.parse import parse_qsl # UPDATED: Changed from parse_qs for strict Telegram compatibility
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,7 +66,7 @@ class User(Base):
     store_township = Column(String, default="")
     store_ward = Column(String, default="")
     store_street = Column(String, default="")
-    store_banner = Column(Text, default="") # NEW: 16:9 Banner Image Base64
+    store_banner = Column(Text, default="") 
 
     # Vendor Payment Profile Settings
     accept_cod = Column(Boolean, default=True)
@@ -81,7 +81,7 @@ class Product(Base):
     name = Column(String, index=True)
     price = Column(Float)
     description = Column(String, default="") 
-    category = Column(String, default="General") # Category (Menu Option)
+    category = Column(String, default="General") 
     image_file_id = Column(String, default="")
     stock = Column(Integer, default=10) 
     vendor_id = Column(Integer, ForeignKey("users.id")) 
@@ -125,7 +125,7 @@ try:
         conn.execute(text("ALTER TABLE users ADD COLUMN store_township TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_ward TEXT DEFAULT ''"))
         conn.execute(text("ALTER TABLE users ADD COLUMN store_street TEXT DEFAULT ''"))
-        conn.execute(text("ALTER TABLE users ADD COLUMN store_banner TEXT DEFAULT ''")) # Migration for Banner
+        conn.execute(text("ALTER TABLE users ADD COLUMN store_banner TEXT DEFAULT ''")) 
 except Exception: pass
 
 def get_db():
@@ -134,20 +134,42 @@ def get_db():
     finally: db.close()
 
 # ==========================================
-# ၃။ SECURE AUTHENTICATION
+# ၃။ SECURE AUTHENTICATION (FIXED)
 # ==========================================
 def get_current_user(x_telegram_init_data: str = Header(None), db: Session = Depends(get_db)):
-    if not x_telegram_init_data: raise HTTPException(status_code=401)
+    if not x_telegram_init_data: 
+        raise HTTPException(status_code=401, detail="Telegram App အတွင်းမှသာ ဖွင့်ပါ။")
+    
     try:
-        vals = {k: v[0] for k, v in parse_qs(x_telegram_init_data).items()}
-        hash_str = vals.pop('hash', None)
-        data_check_str = "\n".join([f"{k}={v}" for k, v in sorted(vals.items())])
+        # UPDATED: Securely parse Telegram Init Data using parse_qsl
+        parsed_data = dict(parse_qsl(x_telegram_init_data, keep_blank_values=True))
+        hash_str = parsed_data.pop('hash', None)
+        
+        if not hash_str: 
+            raise HTTPException(status_code=401, detail="Invalid Authentication Data")
+
+        # Sort keys and join to create the check string exactly as Telegram expects
+        data_check_str = "\n".join([f"{k}={v}" for k, v in sorted(parsed_data.items())])
+        
         secret_key = hmac.new("WebAppData".encode(), BOT_TOKEN.encode(), hashlib.sha256).digest()
         hmac_res = hmac.new(secret_key, data_check_str.encode(), hashlib.sha256).hexdigest()
-        if hmac_res != hash_str: raise HTTPException(status_code=401)
-        tg_user = json.loads(vals['user'])
-    except: raise HTTPException(status_code=401)
+        
+        # Secure comparison
+        if not hmac.compare_digest(hmac_res, hash_str):
+            print("⚠️ HMAC Mismatch! Ensure BOT_TOKEN in code exactly matches the bot running the WebApp.")
+            raise HTTPException(status_code=401, detail="Authentication Failed: Invalid Hash")
+        
+        tg_user_str = parsed_data.get('user', '{}')
+        tg_user = json.loads(tg_user_str)
+        
+        if 'id' not in tg_user: 
+            raise HTTPException(status_code=401, detail="User ID not found")
+
+    except Exception as e: 
+        print(f"Auth Parsing Error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication Error")
     
+    # Database operations
     db_user = db.query(User).filter(User.telegram_id == str(tg_user['id'])).first()
     if not db_user:
         role = "admin" if str(tg_user['id']) == ADMIN_TELEGRAM_ID else "buyer"
@@ -373,7 +395,6 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
-    # Return category as well so vendor can see the assigned menu/option
     return [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock, "category":p.category, "img":p.image_file_id} for p in products]
 
 @app.put("/api/vendor/products/{product_id}")
@@ -385,7 +406,6 @@ async def edit_product(product_id: int, request: Request, user: User = Depends(g
     product.name = data.get("name", product.name)
     product.price = float(data.get("price", product.price))
     product.stock = int(data.get("stock", product.stock))
-    # NEW: Allow vendor to update the Category (Menu Option)
     if "category" in data: product.category = data.get("category", product.category)
     db.commit()
     return {"status": "success"}
@@ -447,7 +467,7 @@ def handle_cms_photo(message):
     finally: db.close()
 
 # ==========================================
-# ၆။ FRONTEND UI (Beautiful Storefront & Menu Options)
+# ၆။ FRONTEND UI (With Auth Fixes)
 # ==========================================
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
@@ -715,7 +735,7 @@ async def serve_frontend():
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
             let localStateFilter = "All";
-            let storeVendorProducts = []; // For Storefront filtering
+            let storeVendorProducts = []; 
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -728,11 +748,20 @@ async def serve_frontend():
 
             async function initApp() {
                 tg.expand(); tg.ready();
+                
+                // FIXED: Prevent Auth API Call if not opened in Telegram
+                if (!initData) {
+                    showToast("⚠️ Telegram အက်ပ်အတွင်းမှသာ ဖွင့်ပါ။ (Browser တွင်ဖွင့်၍မရပါ)");
+                    return; 
+                }
+
                 await fetchLocationData(); 
                 fetchNotifications();
                 
                 try {
-                    const res = await apiFetch('/api/auth'); const data = await res.json();
+                    const res = await apiFetch('/api/auth'); 
+                    if (!res.ok) throw new Error("Auth Failed");
+                    const data = await res.json();
                     currentUser = data.user;
                     
                     document.getElementById('prof-cod').checked = (currentUser.accept_cod !== undefined) ? currentUser.accept_cod : true;
@@ -742,7 +771,6 @@ async def serve_frontend():
                     document.getElementById('prof-store-ward').value = currentUser.store_ward || '';
                     document.getElementById('prof-store-street').value = currentUser.store_street || '';
                     
-                    // Display existing Banner in settings
                     if(currentUser.store_banner) {
                         document.getElementById('prof-store-banner').value = currentUser.store_banner;
                         document.getElementById('prof-store-banner-preview').src = currentUser.store_banner;
@@ -762,7 +790,9 @@ async def serve_frontend():
                     }
                     if (currentUser.role === 'vendor' || currentUser.role === 'admin') { document.getElementById('btn-orders').classList.remove('hidden'); }
                     loadProducts();
-                } catch (e) { showToast("Authentication Failed"); }
+                } catch (e) { 
+                    showToast("⚠️ Authentication Failed. (Bot Token မှန်ကန်မှုရှိမရှိ စစ်ဆေးပါ)"); 
+                }
             }
 
             async function fetchNotifications() {
@@ -814,14 +844,13 @@ async def serve_frontend():
                 }; reader.readAsDataURL(file);
             }
 
-            // NEW: Banner specific compression (Prioritizes width for 16:9)
             function compressBannerImage(el, targetId) {
                 let file = el.files[0]; if(!file) return; let reader = new FileReader();
                 reader.onloadend = function(e) { 
                     let img = new Image();
                     img.onload = function() {
                         let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
-                        let maxW = 1000; // Allow wider resolution for banner
+                        let maxW = 1000; 
                         let width = img.width; let height = img.height;
                         if (width > maxW) { height *= maxW / width; width = maxW; }
                         canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
@@ -903,33 +932,26 @@ async def serve_frontend():
             function filterCategory(cat) { currentCategory = cat; loadProducts(document.getElementById('search-box').value); }
             function autoSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { loadProducts(document.getElementById('search-box').value); }, 400); }
             
-            // =====================================
-            // NEW STOREFRONT & CATEGORY MENU LOGIC
-            // =====================================
             async function openStore(vendorId) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 tg.MainButton.showProgress();
                 try {
                     const res = await apiFetch(`/api/store/${vendorId}`); const data = await res.json();
                     
-                    // Render 16:9 Banner Header
                     document.getElementById('sf-name').innerText = data.store.name;
                     const fullAddr = data.store.state ? `${data.store.street ? data.store.street+'၊ ':''}${data.store.ward ? data.store.ward+'၊ ':''}${data.store.township}၊ ${data.store.state}` : 'တည်နေရာ မသတ်မှတ်ရသေးပါ';
                     document.getElementById('sf-location').innerText = fullAddr;
                     if(data.store.banner) { document.getElementById('sf-banner-img').src = data.store.banner; } 
-                    else { document.getElementById('sf-banner-img').src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMSI+PC9yZWN0Pgo8cGF0aCBkPSJNMCAwTDggOFpNOCAwTDAgOFoiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLW9wYWNpdHk9IjAuMDUiIHN0cm9rZS13aWR0aD0iMSI+PC9wYXRoPgo8L3N2Zz4="; } // Default Pattern
+                    else { document.getElementById('sf-banner-img').src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMSI+PC9yZWN0Pgo8cGF0aCBkPSJNMCAwTDggOFpNOCAwTDAgOFoiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLW9wYWNpdHk9IjAuMDUiIHN0cm9rZS13aWR0aD0iMSI+PC9wYXRoPgo8L3N2Zz4="; }
 
-                    storeVendorProducts = data.products; // Save locally for filtering
+                    storeVendorProducts = data.products; 
                     
-                    // Extract unique categories (Menus) from this vendor's products
                     let sfCategories = ["အားလုံး"];
                     storeVendorProducts.forEach(p => { if(p.category && !sfCategories.includes(p.category)) sfCategories.push(p.category); });
                     
-                    // Render Horizontal Category Menu Options
                     let menuHtml = sfCategories.map(cat => `<button onclick="filterStoreMenu('${cat}')" id="sf-menu-btn-${cat}" class="btn-press sf-menu-chip ${cat === 'အားလုံး' ? 'active' : ''}">${cat}</button>`).join('');
                     document.getElementById('sf-menu-container').innerHTML = menuHtml;
 
-                    // Render all products initially
                     filterStoreMenu('အားလုံး');
 
                     const storeView = document.getElementById('storefront-view');
@@ -940,12 +962,10 @@ async def serve_frontend():
             function filterStoreMenu(category) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 
-                // Update active button styles
                 document.querySelectorAll('.sf-menu-chip').forEach(el => el.classList.remove('active'));
                 const activeBtn = document.getElementById(`sf-menu-btn-${category}`);
                 if(activeBtn) activeBtn.classList.add('active');
 
-                // Filter products
                 let filtered = category === 'အားလုံး' ? storeVendorProducts : storeVendorProducts.filter(p => p.category === category);
                 
                 document.getElementById('sf-current-menu-title').innerText = category === 'အားလုံး' ? "ပစ္စည်းများ အားလုံး" : category;
@@ -1074,10 +1094,9 @@ async def serve_frontend():
                 }).join('');
             }
 
-            // NEW: Added Edit Product Category Input
             function openEditModal(prod) {
                 document.getElementById('edit-prod-id').value = prod.id; document.getElementById('edit-prod-name').value = prod.name; document.getElementById('edit-prod-price').value = prod.price; document.getElementById('edit-prod-stock').value = prod.stock; 
-                document.getElementById('edit-prod-category').value = prod.category || ''; // Category handling
+                document.getElementById('edit-prod-category').value = prod.category || ''; 
                 document.getElementById('edit-product-modal').classList.add('active');
             }
             function closeEditModal() { document.getElementById('edit-product-modal').classList.remove('active'); }
