@@ -26,7 +26,7 @@ ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", "YOUR_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "") 
 
 bot = TeleBot(BOT_TOKEN)
-app = FastAPI(title="Digital Mall Auto-Run System Pro (Draft & Clean-Up Enhanced)")
+app = FastAPI(title="Digital Mall Auto-Run System Pro (Storefront Enhanced)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 try:
@@ -58,7 +58,7 @@ class User(Base):
     default_address = Column(String, default="") 
     phone = Column(String, default="")
     
-    # Store Settings
+    # Store / Local Commerce Settings
     store_name = Column(String, default="")
     store_description = Column(String, default="")
     store_state = Column(String, default="")
@@ -84,8 +84,8 @@ class Product(Base):
     category = Column(String, default="General") 
     custom_category = Column(String, default="General") 
     image_file_id = Column(String, default="")
-    stock = Column(Integer, default=10)
-    is_published = Column(Boolean, default=False) # NEW: Publish status (Draft system)
+    stock = Column(Integer, default=10) 
+    is_published = Column(Boolean, default=False) # AI Adds Draft By Default
     vendor_id = Column(Integer, ForeignKey("users.id")) 
     vendor = relationship("User")
 
@@ -100,6 +100,7 @@ class Order(Base):
     payment_slip = Column(Text, default="") 
     address = Column(String) 
     status = Column(String, default="pending") 
+    is_deleted_by_buyer = Column(Boolean, default=False) # Soft delete for buyers
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     product = relationship("Product")
     user = relationship("User")
@@ -114,9 +115,12 @@ class Notification(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Auto-Migrations
+# Auto-Migration Feature Additions
 try:
-    with engine.begin() as conn: conn.execute(text("ALTER TABLE products ADD COLUMN is_published BOOLEAN DEFAULT 1")) # Old products stay visible
+    with engine.begin() as conn: conn.execute(text("ALTER TABLE products ADD COLUMN is_published BOOLEAN DEFAULT 0"))
+except Exception: pass
+try:
+    with engine.begin() as conn: conn.execute(text("ALTER TABLE orders ADD COLUMN is_deleted_by_buyer BOOLEAN DEFAULT 0"))
 except Exception: pass
 try:
     with engine.begin() as conn: conn.execute(text("ALTER TABLE users ADD COLUMN store_cover TEXT DEFAULT ''"))
@@ -253,9 +257,9 @@ async def update_vendor_profile(req: Request, user: User = Depends(get_current_u
 
 @app.get("/api/products")
 def get_products(category: str = "All", search: str = "", state: str = "All", township: str = "All", ward: str = "", skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
-    query = db.query(Product).join(User).filter(Product.is_published == True) # ONLY PUBLISHED
+    # Only return PUBLISHED products for the public shop
+    query = db.query(Product).join(User).filter(Product.is_published == True)
     
-    # Apply Filters
     if category != "All": query = query.filter(Product.category == category)
     if search: query = query.filter(Product.name.ilike(f"%{search}%"))
     if state != "All": query = query.filter(User.store_state == state)
@@ -263,7 +267,7 @@ def get_products(category: str = "All", search: str = "", state: str = "All", to
     if ward: query = query.filter(User.store_ward.ilike(f"%{ward}%"))
 
     products = query.order_by(Product.id.desc()).offset(skip).limit(limit).all()
-    categories = [c[0] for c in db.query(Product.category).filter(Product.is_published == True).distinct().all()] 
+    categories = [c[0] for c in db.query(Product.category).distinct().all()] 
     states = [s[0] for s in db.query(User.store_state).filter(User.store_state != "").distinct().all()]
     
     res = [{
@@ -283,7 +287,8 @@ def get_products(category: str = "All", search: str = "", state: str = "All", to
 def get_store(vendor_id: int, db: Session = Depends(get_db)):
     vendor = db.query(User).filter(User.id == vendor_id).first()
     if not vendor: raise HTTPException(status_code=404)
-    products = db.query(Product).filter(Product.vendor_id == vendor_id, Product.is_published == True).order_by(Product.id.desc()).all() # ONLY PUBLISHED
+    # Only show PUBLISHED products in the public storefront
+    products = db.query(Product).filter(Product.vendor_id == vendor_id, Product.is_published == True).order_by(Product.id.desc()).all()
     
     res_prods = [{
         "id": p.id, "name": p.name, "price": p.price, "desc": p.description, 
@@ -382,30 +387,25 @@ async def checkout_cart(req: Request, user: User = Depends(get_current_user), db
 
 @app.get("/api/buyer/orders")
 def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    orders = db.query(Order).filter(Order.user_id == user.id).order_by(Order.created_at.desc()).all()
+    # Filter out orders that the buyer has soft-deleted
+    orders = db.query(Order).filter(Order.user_id == user.id, Order.is_deleted_by_buyer == False).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%Y-%m-%d"), "pay": o.payment_method} for o in orders]
 
 @app.delete("/api/buyer/orders/{order_id}")
 def delete_buyer_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Soft delete: Hides from buyer's view, but vendor still sees it
     order = db.query(Order).filter(Order.id == order_id, Order.user_id == user.id).first()
-    if order and order.status in ["delivered", "cancelled"]:
-        db.delete(order); db.commit()
-        return {"status": "success"}
-    raise HTTPException(status_code=400, detail="မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။")
+    if order:
+        order.is_deleted_by_buyer = True
+        db.commit()
+    return {"status": "success"}
 
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
+    # Vendors see all orders placed for their products, regardless of buyer soft-delete
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "slip_img": o.payment_slip if o.payment_slip else ""} for o in orders]
-
-@app.delete("/api/vendor/orders/{order_id}")
-def delete_vendor_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    order = db.query(Order).join(Product).filter(Order.id == order_id, Product.vendor_id == user.id).first()
-    if order and order.status in ["delivered", "cancelled"]:
-        db.delete(order); db.commit()
-        return {"status": "success"}
-    raise HTTPException(status_code=400, detail="မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။")
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -441,7 +441,8 @@ def update_order_status(order_id: int, request: Request, user: User = Depends(ge
 @app.get("/api/vendor/products")
 def get_vendor_products(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
-    products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all() # RETURNS ALL INCLUDING DRAFTS
+    # Return all products (drafts & published) for the vendor dashboard
+    products = db.query(Product).filter(Product.vendor_id == user.id).order_by(Product.id.desc()).all()
     categories = list(set([p.custom_category for p in products if p.custom_category]))
     return {
         "products": [{"id":p.id, "name":p.name, "price":p.price, "stock":p.stock, "custom_category": p.custom_category, "img":p.image_file_id, "is_published": p.is_published} for p in products],
@@ -458,16 +459,8 @@ async def edit_product(product_id: int, request: Request, user: User = Depends(g
     if "price" in data: product.price = float(data.get("price", product.price))
     if "stock" in data: product.stock = int(data.get("stock", product.stock))
     if "custom_category" in data: product.custom_category = data.get("custom_category", product.custom_category)
+    if "is_published" in data: product.is_published = bool(data.get("is_published")) # Allows Publish/Unpublish
     db.commit()
-    return {"status": "success"}
-
-@app.put("/api/vendor/products/{product_id}/publish")
-def toggle_publish(product_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    status = request.query_params.get("status") == "true"
-    product = db.query(Product).filter(Product.id == product_id, Product.vendor_id == user.id).first()
-    if product:
-        product.is_published = status
-        db.commit()
     return {"status": "success"}
 
 @app.delete("/api/vendor/products/{product_id}")
@@ -515,17 +508,22 @@ def handle_cms_photo(message):
                 prompt = f"""Analyze the Burmese text for an e-commerce product: "{caption}". Extract details to strictly JSON. Required keys: 'name', 'price' (numeric), 'category', 'description', 'stock' (numeric)."""
                 payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
                 res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload).json()
-                parsed = json.loads(res['choices'][0]['message']['content'])
+                
+                # Sanitize JSON if wrapped in markdown code blocks by LLM
+                raw_content = res['choices'][0]['message']['content']
+                clean_content = raw_content.replace('```json', '').replace('```', '').strip()
+                parsed = json.loads(clean_content)
+                
                 for k in ['name', 'price', 'category', 'description', 'stock']:
                     if parsed.get(k): ai_data[k] = parsed[k]
                 bot.delete_message(message.chat.id, msg.message_id)
             except: pass
 
-        # NEW PRODUCT DEFAULTS TO DRAFT (is_published=False)
-        new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], custom_category="General", stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id, is_published=False)
+        # is_published is implicitly False (Draft state) as defined in the model
+        new_product = Product(name=ai_data['name'], price=float(ai_data['price']), description=ai_data['description'], category=ai_data['category'], custom_category="General", stock=int(ai_data['stock']), image_file_id=file_id, vendor_id=user.id)
         db.add(new_product)
         db.commit()
-        bot.reply_to(message, f"✅ **ပစ္စည်းအချက်အလက်များကို စနစ်ထဲသို့ ထည့်သွင်းပြီးပါပြီ။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n\n⚠️ **သတိပြုရန်:** ဝယ်သူများမြင်တွေ့နိုင်ရန်အတွက် App ထဲရှိ **စီမံရန် -> ပစ္စည်းများ** တွင်ဝင်၍ **'👁️ ဆိုင်တင်မည်'** ကို နှိပ်ပေးရန် လိုအပ်ပါသည်။", parse_mode="Markdown")
+        bot.reply_to(message, f"✅ **ပစ္စည်းကို 'စီမံရန် -> ပစ္စည်းများ' ထဲတွင် မှတ်သားထားပါသည်။**\n\n📌 {ai_data['name']}\n💰 {ai_data['price']} Ks\n📦 Stock: {ai_data['stock']}\n\n⚠️ _ဝယ်သူများ မြင်တွေ့နိုင်ရန် App ထဲသို့ဝင်၍ `ရောင်းချမည် (Publish)` သို့ ပြောင်းပေးပါ။_", parse_mode="Markdown")
     except Exception: bot.reply_to(message, f"အမှားအယွင်း ဖြစ်ပေါ်ခဲ့ပါသည်။")
     finally: db.close()
 
@@ -562,6 +560,7 @@ async def serve_frontend():
             .gradient-text { background: linear-gradient(135deg, #2563eb, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .gradient-bg { background: linear-gradient(135deg, #2563eb, #8b5cf6); }
             
+            /* High 5D Drop Shadow Effect for Product Cards */
             .shadow-5d { box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3), 0 15px 25px -15px rgba(0, 0, 0, 0.15); }
             
             .glass-header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); }
@@ -851,9 +850,11 @@ async def serve_frontend():
             let searchTimeout = null, mmData = {}; 
             let currentUser = {};
             
+            // Advanced Location Filters
             let localStateFilter = "All";
             let localTownshipFilter = "All";
 
+            // Storefront variables
             let storeViewProducts = [];
             let storeCurrentCat = "All";
 
@@ -996,6 +997,7 @@ async def serve_frontend():
                 }
             }
 
+            // Advanced Location Filter Handlers
             function updateLocalTownships(stateVal) {
                 localStateFilter = stateVal;
                 localTownshipFilter = "All";
@@ -1052,6 +1054,7 @@ async def serve_frontend():
                 document.getElementById('product-list').innerHTML = allProducts.map((p, index) => generateProductCardHTML(p, index)).join('');
             }
 
+            // EDGE-TO-EDGE + 5D SHADOW Implementation
             function generateProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
@@ -1083,6 +1086,7 @@ async def serve_frontend():
                 </div>`
             }
 
+            // EDGE-TO-EDGE + 5D SHADOW for Storefront Products
             function generateStorefrontProductCardHTML(p, index) {
                 const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; 
                 const isOut = p.stock <= 0; const animDelay = (index % 10) * 0.05; 
@@ -1128,6 +1132,7 @@ async def serve_frontend():
                     storeViewProducts = data.products;
                     storeCurrentCat = "All";
                     
+                    // Render Menu Categories
                     let catsHTML = `<button onclick="filterStoreMenu('All')" id="scat-All" class="btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-transparent bg-indigo-600 text-white shadow-md">အားလုံး</button>`;
                     data.categories.forEach(c => catsHTML += `<button onclick="filterStoreMenu('${c}')" id="scat-${c.replace(/\s+/g, '-')}" class="btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-slate-200 bg-white text-slate-600 shadow-sm">${c}</button>`);
                     document.getElementById('storefront-categories').innerHTML = catsHTML;
@@ -1141,6 +1146,7 @@ async def serve_frontend():
             function filterStoreMenu(cat) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 storeCurrentCat = cat;
+                // Update UI Chips
                 document.querySelectorAll('#storefront-categories button').forEach(b => {
                     b.className = "btn-press px-5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border border-slate-200 bg-white text-slate-600 shadow-sm";
                 });
@@ -1286,41 +1292,38 @@ async def serve_frontend():
                 finally { tg.MainButton.hideProgress(); }
             }
 
-            // BUYER ORDER CLEANUP
             async function loadBuyerOrders() {
                 const res = await apiFetch('/api/buyer/orders'); const orders = await res.json();
                 const trackIndex = { 'pending': 1, 'approved': 2, 'shipped': 3, 'delivered': 4, 'cancelled': 0 };
+                
+                if(orders.length === 0) {
+                    document.getElementById('buyer-order-list').innerHTML = `<div class="text-center py-10 text-slate-400 font-medium">အော်ဒါမှတ်တမ်း မရှိသေးပါ</div>`;
+                    return;
+                }
+                
                 document.getElementById('buyer-order-list').innerHTML = orders.map((o, index) => {
                     let level = trackIndex[o.status]; let progressWidth = level === 0 ? 0 : ((level - 1) / 3) * 100;
                     let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-4"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">ထုပ်ပိုးဆဲ</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
-                    
-                    let deleteBtn = (o.status === 'delivered' || o.status === 'cancelled') ? `<button onclick="deleteBuyerOrder(${o.id})" class="text-red-500 hover:bg-red-50 p-1.5 rounded-lg text-[10px] font-bold transition flex items-center gap-1">🗑️ မှတ်တမ်းဖျက်မည်</button>` : '';
-
                     const animDelay = (index % 10) * 0.1;
                     return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${animDelay}s">
                         <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3">
-                            <span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span>
-                            <span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span>
+                            <div><span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name}</span> <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></div>
+                            <div class="flex flex-col items-end"><span class="font-black text-slate-800 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span></div>
                         </div>
                         ${trackerHtml}
-                        <div class="flex justify-between items-center mt-4 bg-slate-50 p-2 rounded-xl">
-                            <div class="text-[10px] font-bold text-slate-400 flex flex-col gap-1">
-                                <span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span>
-                                <span>📅 ${o.date}</span>
-                            </div>
-                            ${deleteBtn}
+                        <div class="flex justify-between items-center mt-4">
+                            <div class="text-[10px] font-bold text-slate-400 bg-slate-50 p-2 rounded-xl flex gap-2"><span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD' : '💳 QR'}</span><span>📅 ${o.date}</span></div>
+                            <button onclick="if(confirm('ဤမှတ်တမ်းကို သင့်ဖုန်းထဲမှ ဖျက်မှာ သေချာပါသလား?')) deleteBuyerOrder(${o.id})" class="text-red-500 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-lg text-[10px] font-extrabold btn-press transition">🗑️ ဖျက်မည်</button>
                         </div>
                     </div>`;
                 }).join('');
             }
-
+            
             async function deleteBuyerOrder(orderId) {
-                if(confirm("ဤအော်ဒါမှတ်တမ်းကို ဖျက်ပစ်မည်မှာ သေချာပါသလား?")) {
-                    tg.MainButton.showProgress();
-                    const res = await apiFetch(`/api/buyer/orders/${orderId}`, {method: 'DELETE'});
-                    tg.MainButton.hideProgress();
-                    if(res.ok) { showToast("✅ ဖျက်သိမ်းပြီးပါပြီ"); loadBuyerOrders(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
-                }
+                tg.MainButton.showProgress();
+                const res = await apiFetch(`/api/buyer/orders/${orderId}`, { method: 'DELETE' });
+                tg.MainButton.hideProgress();
+                if(res.ok) { showToast("✅ မှတ်တမ်းဖျက်ပြီးပါပြီ"); loadBuyerOrders(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
             }
             
             function switchVendorTab(tab) {
@@ -1332,15 +1335,17 @@ async def serve_frontend():
                 if(tab === 'dash') loadVendorOrders(); else if(tab === 'prods') loadVendorProducts();
             }
             
-            // VENDOR ORDER CLEANUP
             async function loadVendorOrders() {
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
+                
+                if(orders.length === 0) {
+                    document.getElementById('order-list').innerHTML = `<div class="text-center py-10 text-slate-400 font-medium">အော်ဒါဝင်ထားခြင်း မရှိသေးပါ</div>`;
+                    return;
+                }
+
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
                     const animDelay = (index % 10) * 0.1;
                     let slipBtnHtml = ''; if(o.slip_img) slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
-                    
-                    let deleteBtn = (o.status === 'delivered' || o.status === 'cancelled') ? `<button onclick="deleteVendorOrder(${o.id})" class="text-red-500 bg-red-50 hover:bg-red-100 px-3 py-2 rounded-xl text-[11px] font-extrabold transition btn-press flex-1 border border-red-100">🗑️ မှတ်တမ်းဖျက်မည်</button>` : '';
-
                     return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s">
                     <div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div>
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
@@ -1348,26 +1353,14 @@ async def serve_frontend():
                         <div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} ${slipBtnHtml}</div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
-                    <div class="flex gap-2">
-                        <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="flex-[2] bg-white border border-indigo-200 text-indigo-700 p-2.5 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
-                            <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
-                            <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option>
-                            <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
-                            <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
-                            <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
-                        </select>
-                        ${deleteBtn}
-                    </div>
+                    <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
+                        <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
+                        <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option>
+                        <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
+                        <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
+                        <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
+                    </select>
                 </div>`}).join('');
-            }
-
-            async function deleteVendorOrder(orderId) {
-                if(confirm("ဤအော်ဒါမှတ်တမ်းကို လုံးဝဖျက်ပစ်မည်မှာ သေချာပါသလား?")) {
-                    tg.MainButton.showProgress();
-                    const res = await apiFetch(`/api/vendor/orders/${orderId}`, {method: 'DELETE'});
-                    tg.MainButton.hideProgress();
-                    if(res.ok) { showToast("✅ ဖျက်သိမ်းပြီးပါပြီ"); loadVendorOrders(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
-                }
             }
             
             function viewSlip(imgData) { document.getElementById('slip-viewer-img').src = imgData; document.getElementById('slip-viewer-modal').classList.add('active'); }
@@ -1389,49 +1382,50 @@ async def serve_frontend():
                 const res = await apiFetch('/api/vendor/products'); const data = await res.json();
                 vendorProducts = data.products;
                 
+                // Populate datalist for category selection
                 let catOpts = "";
                 data.categories.forEach(c => { if(c) catOpts += `<option value="${c}">`; });
                 document.getElementById('vendor-categories-list').innerHTML = catOpts;
 
+                if(vendorProducts.length === 0) {
+                    document.getElementById('vendor-product-list').innerHTML = `<div class="text-center py-10 text-slate-400 font-medium">ပစ္စည်းတင်ထားခြင်း မရှိသေးပါ</div>`;
+                    return;
+                }
+
                 document.getElementById('vendor-product-list').innerHTML = vendorProducts.map((p, index) => {
                     const imgSrc = p.img ? `/api/image/${p.img}` : 'https://via.placeholder.com/300'; const animDelay = (index % 10) * 0.1;
-                    
-                    // PUBLISH TOGGLE BUTTON
-                    let pubBtn = p.is_published ? 
-                        `<button onclick="togglePublish(${p.id}, false)" class="btn-press flex-1 bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-emerald-100 transition">✅ ဆိုင်တင်ထားသည်</button>` : 
-                        `<button onclick="togglePublish(${p.id}, true)" class="btn-press flex-1 bg-slate-100 text-slate-500 border border-slate-200 px-2 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-slate-200 transition">👁️ ဆိုင်တင်မည်</button>`;
-
-                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border ${p.is_published ? 'border-emerald-100' : 'border-slate-100'} mb-3 relative overflow-hidden" style="animation-delay: ${animDelay}s">
-                        ${!p.is_published ? '<div class="absolute top-2 right-2 bg-slate-500/90 text-white text-[9px] font-black px-2 py-1 rounded-lg z-10">Draft / ဖျောက်ထားသည်</div>' : ''}
-                        
+                    return `<div class="animate-fade-up bg-white p-3.5 rounded-3xl shadow-sm border border-slate-100 mb-3 relative overflow-hidden" style="animation-delay: ${animDelay}s">
                         <div class="flex gap-4 items-center">
                             <img src="${imgSrc}" class="w-20 h-20 object-cover rounded-2xl shadow-sm border border-slate-100 bg-slate-50">
-                            <div class="flex-1 pr-1">
-                                <div class="text-[13px] font-extrabold ${p.is_published ? 'text-slate-800' : 'text-slate-500'} line-clamp-1 mb-1">${p.name}</div>
+                            <div class="flex-1">
+                                <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 mb-1">${p.name}</div>
                                 <div class="text-indigo-600 text-sm font-black mb-1.5">${p.price.toLocaleString()} Ks</div>
-                                <div class="flex items-center gap-1.5">
+                                <div class="flex items-center gap-1.5 mb-1.5">
                                     <span class="text-[9px] text-slate-500 font-extrabold bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">📦 Stock: ${p.stock}</span>
                                     <span class="text-[9px] text-indigo-500 font-extrabold bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 flex items-center"><span class="mr-0.5">🏷️</span> ${p.custom_category || 'General'}</span>
                                 </div>
                             </div>
                         </div>
-                        <div class="flex gap-2 mt-3 border-t border-slate-50 pt-3">
-                            ${pubBtn}
-                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-1 bg-indigo-50 border border-indigo-100 text-indigo-600 px-2 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-indigo-100">ပြင်မည်</button>
-                            <button onclick="if(confirm('ဤပစ္စည်းကို အပြီးတိုင် ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press flex-[0.7] text-red-500 bg-red-50 border border-red-100 px-2 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-red-100">ဖျက်မည်</button>
+                        
+                        <div class="flex items-center gap-2 mt-2 bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
+                            <span class="text-[10px] font-black ${p.is_published ? 'text-emerald-600' : 'text-amber-600'}">${p.is_published ? '✅ လူမြင်ကွင်း (Public)' : '🔒 ဖျောက်ထားသည် (Draft)'}</span>
+                            <button onclick="togglePublish(${p.id}, ${!p.is_published})" class="ml-auto btn-press bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-sm transition hover:bg-slate-100">${p.is_published ? 'ဖျောက်မည်' : 'ရောင်းမည် (Publish)'}</button>
+                        </div>
+                        
+                        <div class="flex gap-2 mt-2 border-t border-slate-50 pt-2">
+                            <button onclick="quickMoveCategory(${p.id})" class="btn-press flex-[1.5] bg-indigo-600 text-white px-3 py-1.5 rounded-xl text-[11px] font-bold shadow-md shadow-indigo-500/30">Menu ပြောင်းမည်</button>
+                            <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-indigo-100">ပြင်မည်</button>
+                            <button onclick="if(confirm('ဤပစ္စည်းကို အပြီးတိုင် ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(() => { showToast('✅ ပစ္စည်းဖျက်ပြီးပါပြီ'); loadVendorProducts(); loadProducts(); })" class="btn-press flex-1 text-red-500 bg-red-50 px-3 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-red-100">ဖျက်မည်</button>
                         </div>
                     </div>`
                 }).join('');
             }
 
-            async function togglePublish(prodId, status) {
+            async function togglePublish(prodId, setPublish) {
                 tg.MainButton.showProgress();
-                const res = await apiFetch(`/api/vendor/products/${prodId}/publish?status=${status}`, { method: 'PUT' });
+                const res = await apiFetch(`/api/vendor/products/${prodId}`, { method: 'PUT', body: JSON.stringify({ is_published: setPublish }) });
                 tg.MainButton.hideProgress();
-                if(res.ok) { 
-                    showToast(status ? "✅ ဆိုင်ပေါ်သို့ တင်ပြီးပါပြီ" : "🚫 ဆိုင်ပေါ်မှ ဖြုတ်ချထားပါသည်"); 
-                    loadVendorProducts(); loadProducts();
-                } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
+                if(res.ok) { showToast(setPublish ? "✅ လူမြင်ကွင်းသို့ တင်လိုက်ပါပြီ" : "✅ ဤပစ္စည်းကို ဖျောက်ထားပါသည်"); loadVendorProducts(); loadProducts(); } else { showToast("⚠️ အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။"); }
             }
 
             async function quickMoveCategory(prodId) {
