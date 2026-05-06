@@ -381,11 +381,33 @@ def get_buyer_orders(user: User = Depends(get_current_user), db: Session = Depen
     orders = db.query(Order).filter(Order.user_id == user.id).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "price": o.product.price, "status": o.status, "date": o.created_at.strftime("%Y-%m-%d"), "pay": o.payment_method} for o in orders]
 
+# NEW FEATURE: Buyer Order Deletion API
+@app.delete("/api/buyer/orders/{order_id}")
+def delete_buyer_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    order = db.query(Order).filter(Order.id == order_id, Order.user_id == user.id).first()
+    # Allow deletion only if order is finished (delivered or cancelled)
+    if order and order.status in ["delivered", "cancelled"]:
+        db.delete(order)
+        db.commit()
+        return {"status": "success"}
+    raise HTTPException(status_code=400, detail="မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။")
+
 @app.get("/api/vendor/orders")
 def get_vendor_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role not in ["vendor", "admin"]: raise HTTPException(status_code=403)
     orders = db.query(Order).join(Product).filter(Product.vendor_id == user.id).order_by(Order.created_at.desc()).all()
     return [{"id": o.id, "name": o.product.name, "qty": o.quantity, "buyer": o.user.full_name, "tx": o.transaction_id, "addr": o.address, "status": o.status, "pay": o.payment_method, "slip_img": o.payment_slip if o.payment_slip else ""} for o in orders]
+
+# NEW FEATURE: Vendor Order Deletion API
+@app.delete("/api/vendor/orders/{order_id}")
+def delete_vendor_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    order = db.query(Order).join(Product).filter(Order.id == order_id, Product.vendor_id == user.id).first()
+    # Allow deletion only if order is finished (delivered or cancelled)
+    if order and order.status in ["delivered", "cancelled"]:
+        db.delete(order)
+        db.commit()
+        return {"status": "success"}
+    raise HTTPException(status_code=400, detail="မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။")
 
 @app.post("/api/vendor/orders/{order_id}/status")
 def update_order_status(order_id: int, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1069,7 +1091,7 @@ async def serve_frontend():
                             <div class="text-[13px] font-extrabold text-slate-800 line-clamp-1 leading-snug mb-1.5">${p.name}</div>
                             <div class="flex justify-between items-end mb-2">
                                 <div class="text-indigo-600 text-[15px] font-black leading-none">${p.price.toLocaleString()} <span class="text-[10px] font-bold">Ks</span></div>
-                                <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'textemerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
+                                <div class="text-[9px] font-bold ${isOut ? 'text-red-500 bg-red-50' : 'text-emerald-600 bg-emerald-50'} px-1.5 py-0.5 rounded-md shrink-0 border ${isOut ? 'border-red-100' : 'border-emerald-100'}">📦 Stock: ${p.stock}</div>
                             </div>
                         </div>
                         <div class="flex gap-1.5 mt-1">
@@ -1286,19 +1308,44 @@ async def serve_frontend():
                 finally { tg.MainButton.hideProgress(); }
             }
 
+            // ============================
+            // BUYER ORDER MANAGEMENT
+            // ============================
             async function loadBuyerOrders() {
                 const res = await apiFetch('/api/buyer/orders'); const orders = await res.json();
                 const trackIndex = { 'pending': 1, 'approved': 2, 'shipped': 3, 'delivered': 4, 'cancelled': 0 };
                 document.getElementById('buyer-order-list').innerHTML = orders.map((o, index) => {
                     let level = trackIndex[o.status]; let progressWidth = level === 0 ? 0 : ((level - 1) / 3) * 100;
                     let trackerHtml = o.status === 'cancelled' ? `<div class="text-center my-4"><span class="status-cancelled">❌ ဤအော်ဒါအား ပယ်ဖျက်လိုက်ပါသည်</span></div>` : `<div class="tracker-container"><div class="tracker-line"></div><div class="tracker-progress" style="width: ${progressWidth}%;"></div><div class="track-step ${level >= 1 ? 'active' : ''}"><div class="track-dot">✓</div><span class="track-label">စစ်ဆေးဆဲ</span></div><div class="track-step ${level >= 2 ? 'active' : ''}"><div class="track-dot">📦</div><span class="track-label">ထုပ်ပိုးဆဲ</span></div><div class="track-step ${level >= 3 ? 'active' : ''}"><div class="track-dot">🚚</div><span class="track-label">ပို့နေပါပြီ</span></div><div class="track-step ${level >= 4 ? 'active' : ''}"><div class="track-dot">🎁</div><span class="track-label">ရောက်ပါပြီ</span></div></div>`;
+                    
+                    // Add Delete button if order is finished (delivered or cancelled)
+                    let deleteBtn = (o.status === 'delivered' || o.status === 'cancelled') ? `<button onclick="deleteBuyerOrder(${o.id})" class="text-red-500 hover:bg-red-50 p-1.5 rounded-lg text-[10px] font-bold transition flex items-center gap-1 border border-red-100">🗑️ မှတ်တမ်းဖျက်မည်</button>` : '';
+
                     const animDelay = (index % 10) * 0.1;
                     return `<div class="animate-fade-up bg-white p-5 rounded-3xl shadow-[0_2px_12px_rgba(0,0,0,0.03)] border border-slate-100" style="animation-delay: ${animDelay}s">
-                        <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3"><span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span><span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span></div>
+                        <div class="flex justify-between items-start mb-3 border-b border-slate-50 pb-3">
+                            <span class="text-[14px] font-extrabold text-slate-800 leading-snug">${o.name} <span class="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md text-[11px] ml-1">x${o.qty}</span></span>
+                            <span class="font-black text-slate-800 ml-3 shrink-0">${(o.price * o.qty).toLocaleString()} Ks</span>
+                        </div>
                         ${trackerHtml}
-                        <div class="flex justify-between items-center text-[10px] font-bold text-slate-400 mt-4 bg-slate-50 p-2 rounded-xl"><span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span><span>📅 ${o.date}</span></div>
+                        <div class="flex justify-between items-center mt-4 bg-slate-50 p-2 rounded-xl">
+                            <div class="text-[10px] font-bold text-slate-400 flex flex-col gap-1">
+                                <span class="flex items-center gap-1">${o.pay === 'COD' ? '🏠 COD စနစ်' : '💳 QR ဖြင့်ချေထားသည်'}</span>
+                                <span>📅 ${o.date}</span>
+                            </div>
+                            ${deleteBtn}
+                        </div>
                     </div>`;
                 }).join('');
+            }
+
+            async function deleteBuyerOrder(orderId) {
+                if(confirm("ဤအော်ဒါမှတ်တမ်းကို မှတ်တမ်းထဲမှ ဖျက်ပစ်မည်မှာ သေချာပါသလား?")) {
+                    tg.MainButton.showProgress();
+                    const res = await apiFetch(`/api/buyer/orders/${orderId}`, {method: 'DELETE'});
+                    tg.MainButton.hideProgress();
+                    if(res.ok) { showToast("✅ ဖျက်သိမ်းပြီးပါပြီ"); loadBuyerOrders(); } else { showToast("⚠️ မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။"); }
+                }
             }
             
             function switchVendorTab(tab) {
@@ -1310,11 +1357,18 @@ async def serve_frontend():
                 if(tab === 'dash') loadVendorOrders(); else if(tab === 'prods') loadVendorProducts();
             }
             
+            // ============================
+            // VENDOR ORDER MANAGEMENT
+            // ============================
             async function loadVendorOrders() {
                 const res = await apiFetch('/api/vendor/orders'); const orders = await res.json();
                 document.getElementById('order-list').innerHTML = orders.map((o, index) => {
                     const animDelay = (index % 10) * 0.1;
                     let slipBtnHtml = ''; if(o.slip_img) slipBtnHtml = `<button onclick="viewSlip(this.getAttribute('data-img'))" data-img="${o.slip_img}" class="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded-lg ml-1 text-[10px] font-extrabold border border-emerald-200 transition btn-press shadow-sm">📸 ပြေစာကြည့်မည်</button>`;
+                    
+                    // Add Delete button if order is finished (delivered or cancelled)
+                    let deleteBtn = (o.status === 'delivered' || o.status === 'cancelled') ? `<button onclick="deleteVendorOrder(${o.id})" class="text-red-500 bg-red-50 hover:bg-red-100 px-3 py-2 rounded-xl text-[11px] font-extrabold transition btn-press flex-1 border border-red-100">🗑️ ဖျက်မည်</button>` : '';
+
                     return `<div class="animate-fade-up bg-white p-4 rounded-3xl shadow-sm border border-slate-100 mb-4" style="animation-delay: ${animDelay}s">
                     <div class="flex justify-between items-start mb-3"><div class="text-sm font-extrabold text-slate-800 pr-2">${o.name} <span class="text-indigo-600">x${o.qty}</span></div><div class="text-[10px] uppercase font-black px-2.5 py-1 rounded-lg ${o.status==='pending'?'bg-amber-100 text-amber-700':o.status==='cancelled'?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}">${o.status}</div></div>
                     <div class="bg-slate-50 p-3 rounded-2xl text-[12px] font-medium text-slate-600 mb-3 border border-slate-100 space-y-1.5 leading-relaxed">
@@ -1322,14 +1376,26 @@ async def serve_frontend():
                         <div class="flex items-center gap-1.5 flex-wrap"><span class="text-slate-400">💳</span> ${o.pay === 'COD' ? '🏠 COD' : 'TxID: <b class="text-slate-800 font-mono tracking-wide">' + (o.tx || '-') + '</b>'} ${slipBtnHtml}</div>
                         <div class="flex items-start gap-1.5"><span class="text-slate-400 mt-0.5">📍</span> <span class="line-clamp-2">${o.addr}</span></div>
                     </div>
-                    <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="w-full bg-white border border-indigo-200 text-indigo-700 p-3 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
-                        <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
-                        <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option>
-                        <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
-                        <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
-                        <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
-                    </select>
+                    <div class="flex gap-2">
+                        <select onchange="updateOrderStatus(${o.id}, this.value, this)" class="flex-[2] bg-white border border-indigo-200 text-indigo-700 p-2.5 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-[0_2px_4px_rgba(99,102,241,0.05)] transition">
+                            <option value="pending" ${o.status==='pending'?'selected':''}>⏳ စစ်ဆေးဆဲ</option>
+                            <option value="approved" ${o.status==='approved'?'selected':''}>📦 အတည်ပြုမည် (ထုပ်ပိုးမည်)</option>
+                            <option value="shipped" ${o.status==='shipped'?'selected':''}>🚚 ပို့ဆောင်လိုက်ပြီ</option>
+                            <option value="delivered" ${o.status==='delivered'?'selected':''}>✅ ရောက်ရှိပါပြီ</option>
+                            <option value="cancelled" ${o.status==='cancelled'?'selected':''}>❌ ပယ်ဖျက်မည်</option>
+                        </select>
+                        ${deleteBtn}
+                    </div>
                 </div>`}).join('');
+            }
+
+            async function deleteVendorOrder(orderId) {
+                if(confirm("ဤအော်ဒါမှတ်တမ်းကို လုံးဝဖျက်ပစ်မည်မှာ သေချာပါသလား?")) {
+                    tg.MainButton.showProgress();
+                    const res = await apiFetch(`/api/vendor/orders/${orderId}`, {method: 'DELETE'});
+                    tg.MainButton.hideProgress();
+                    if(res.ok) { showToast("✅ ဖျက်သိမ်းပြီးပါပြီ"); loadVendorOrders(); } else { showToast("⚠️ မပြီးဆုံးသေးသော အော်ဒါကို ဖျက်၍မရပါ။"); }
+                }
             }
             
             function viewSlip(imgData) { document.getElementById('slip-viewer-img').src = imgData; document.getElementById('slip-viewer-modal').classList.add('active'); }
@@ -1346,6 +1412,9 @@ async def serve_frontend():
                 });
             }
             
+            // ============================
+            // VENDOR PRODUCT MANAGEMENT
+            // ============================
             let vendorProducts = [];
             async function loadVendorProducts() {
                 const res = await apiFetch('/api/vendor/products'); const data = await res.json();
@@ -1373,7 +1442,7 @@ async def serve_frontend():
                         <div class="flex gap-2 mt-3 border-t border-slate-50 pt-3">
                             <button onclick="quickMoveCategory(${p.id})" class="btn-press flex-[1.5] bg-indigo-600 text-white px-3 py-1.5 rounded-xl text-[11px] font-bold shadow-md shadow-indigo-500/30">Menu ပြောင်းမည်</button>
                             <button onclick='openEditModal(${JSON.stringify(p).replace(/'/g, "&#39;")})' class="btn-press flex-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-indigo-100">ပြင်မည်</button>
-                            <button onclick="if(confirm('ဤပစ္စည်းကို ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press flex-1 text-red-500 bg-red-50 px-3 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-red-100">ဖျက်မည်</button>
+                            <button onclick="if(confirm('ဤပစ္စည်းကို အပြီးတိုင် ဖျက်မှာ သေချာပါသလား?')) apiFetch('/api/vendor/products/${p.id}', {method:'DELETE'}).then(loadVendorProducts)" class="btn-press flex-1 text-red-500 bg-red-50 border border-red-100 px-3 py-1.5 rounded-xl text-[11px] font-extrabold hover:bg-red-100">ဖျက်မည်</button>
                         </div>
                     </div>`
                 }).join('');
