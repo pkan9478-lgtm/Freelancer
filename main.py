@@ -48,7 +48,7 @@ class Staff(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, unique=True, index=True)
     full_name = Column(String)
-    role = Column(String, default="admin") # admin, waiter, kitchen
+    role = Column(String, default="admin")
 
 class MenuItem(Base):
     __tablename__ = "menu_items"
@@ -58,22 +58,24 @@ class MenuItem(Base):
     price_thb = Column(Float, nullable=False)
     category = Column(String, default="Main Course", index=True)
     image_base64 = Column(Text, default="")
-    dietary_tags = Column(String, default="") # e.g., "Vegan, Gluten-Free"
+    dietary_tags = Column(String, default="")
     is_available = Column(Boolean, default=True)
 
 class RestaurantTable(Base):
     __tablename__ = "restaurant_tables"
     id = Column(Integer, primary_key=True)
     table_number = Column(String, unique=True, index=True)
-    secure_token = Column(String, unique=True, index=True) # Cryptographic URL Token
-    status = Column(String, default="available") # available, occupied, needs_service, requested_bill
+    secure_token = Column(String, unique=True, index=True)
+    status = Column(String, default="available")
 
 class DineInOrder(Base):
     __tablename__ = "dine_in_orders"
     id = Column(Integer, primary_key=True)
     table_id = Column(Integer, ForeignKey("restaurant_tables.id"))
+    guest_name = Column(String, default="Guest")
+    party_size = Column(Integer, default=1)
     total_thb = Column(Float, default=0.0)
-    status = Column(String, default="received") # received, cooking, served, paid
+    status = Column(String, default="received") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     table = relationship("RestaurantTable")
     items = relationship("OrderItem", back_populates="order")
@@ -90,6 +92,14 @@ class OrderItem(Base):
     menu_item = relationship("MenuItem")
 
 Base.metadata.create_all(bind=engine)
+
+# Auto-migrate new fields if upgrading existing SQLite DB
+try:
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE dine_in_orders ADD COLUMN guest_name VARCHAR DEFAULT 'Guest'"))
+        conn.execute(text("ALTER TABLE dine_in_orders ADD COLUMN party_size INTEGER DEFAULT 1"))
+except Exception:
+    pass
 
 def get_db():
     db = SessionLocal()
@@ -138,12 +148,14 @@ def get_menu_guest(db: Session = Depends(get_db)):
 async def place_order(req: Request, db: Session = Depends(get_db)):
     data = await req.json()
     secure_token = data.get('secure_token')
+    guest_name = data.get('guest_name', 'Guest')
+    party_size = data.get('party_size', 1)
     cart = data.get('cart', [])
     
     table = db.query(RestaurantTable).filter(RestaurantTable.secure_token == secure_token).first()
     if not table or not cart: raise HTTPException(status_code=400, detail="Invalid Order")
 
-    new_order = DineInOrder(table_id=table.id, total_thb=0.0)
+    new_order = DineInOrder(table_id=table.id, guest_name=guest_name, party_size=party_size, total_thb=0.0)
     db.add(new_order)
     db.flush()
 
@@ -167,7 +179,12 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
 
     # DISPATCH TO TELEGRAM (STAFF)
     staff_members = db.query(Staff).all()
-    dispatch_msg = f"🔔 **NEW ORDER | Table {table.table_number}**\n\n" + "\n".join(receipt_lines) + f"\n\n💰 **Total: ฿{total_thb:,.2f}**"
+    dispatch_msg = (
+        f"🔔 **NEW ORDER | Table {table.table_number}**\n"
+        f"👨‍👩‍👧‍👦 **Group:** {guest_name} ({party_size} Pax)\n\n"
+        + "\n".join(receipt_lines) + 
+        f"\n\n💰 **Total: ฿{total_thb:,.2f}**"
+    )
     
     for staff in staff_members:
         try: bot.send_message(staff.telegram_id, dispatch_msg, parse_mode="Markdown")
@@ -179,7 +196,8 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
 async def request_service(req: Request, db: Session = Depends(get_db)):
     data = await req.json()
     secure_token = data.get('secure_token')
-    service_type = data.get('type') # 'waiter' or 'bill'
+    service_type = data.get('type')
+    guest_name = data.get('guest_name', 'Guest')
     
     table = db.query(RestaurantTable).filter(RestaurantTable.secure_token == secure_token).first()
     if not table: raise HTTPException(status_code=400)
@@ -191,7 +209,7 @@ async def request_service(req: Request, db: Session = Depends(get_db)):
     alert_text = "Waitstaff Requested" if service_type == "waiter" else "Bill Requested"
     
     for staff in db.query(Staff).all():
-        try: bot.send_message(staff.telegram_id, f"{alert_icon} **{alert_text} | Table {table.table_number}**\n_Please attend to the guests immediately._", parse_mode="Markdown")
+        try: bot.send_message(staff.telegram_id, f"{alert_icon} **{alert_text} | Table {table.table_number}**\n_Group: {guest_name}_\n_Please attend immediately._", parse_mode="Markdown")
         except: pass
         
     return {"status": "success"}
@@ -242,7 +260,7 @@ async def serve_frontend():
         <title>Coral Beach - Premium Dine-In</title>
         <style>
             :root { --gold: #D4AF37; --dark: #0f1115; --slate: #1e2430; }
-            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; }
+            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
             h1, h2, h3, .serif { font-family: 'Playfair Display', serif; }
             
             .gold-gradient { background: linear-gradient(135deg, #F3E5AB, #D4AF37, #C5A028); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -251,6 +269,13 @@ async def serve_frontend():
             .glass-card { background: rgba(30, 36, 48, 0.6); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 20px; }
             .btn-press:active { transform: scale(0.96); transition: transform 0.1s ease; }
             
+            /* Slide Animations */
+            .panel { position: fixed; inset: 0; background: var(--dark); z-index: 40; display: flex; flex-direction: column; transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.4s ease; }
+            .panel.hidden-state { display: none; }
+            .slide-out-left { transform: translateX(-100%); opacity: 0; pointer-events: none; }
+            .slide-in-right { transform: translateX(100%); opacity: 0; }
+            .slide-active { transform: translateX(0); opacity: 1; }
+
             .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100; display: none; flex-direction: column; justify-content: flex-end; }
             .modal.active { display: flex; animation: fadeIn 0.3s; }
             .modal-content { background: var(--slate); border-top-left-radius: 28px; border-top-right-radius: 28px; padding: 28px; border-top: 1px solid rgba(212, 175, 55, 0.2); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
@@ -262,19 +287,68 @@ async def serve_frontend():
             #toast { visibility: hidden; background: #D4AF37; color: #000; text-align: center; border-radius: 12px; padding: 12px 20px; position: fixed; z-index: 1000; left: 50%; top: 40px; transform: translateX(-50%); font-weight: 800; font-size: 14px; box-shadow: 0 10px 25px rgba(212, 175, 55, 0.3); }
             #toast.show { visibility: visible; animation: fadeIn 0.3s, fadeIn 0.3s 3s reverse forwards; }
             
-            /* Custom Scrollbar for sleek UI */
             ::-webkit-scrollbar { width: 4px; height: 4px; }
             ::-webkit-scrollbar-thumb { background: rgba(212, 175, 55, 0.3); border-radius: 10px; }
         </style>
     </head>
-    <body class="pb-28">
+    <body>
         <div id="toast">Message</div>
 
-        <div id="guest-view" class="hidden">
-            <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
+        <div id="step-1" class="panel slide-active justify-center items-center px-6 text-center hidden-state">
+            <div class="mb-8 animate-slide-up">
+                <div class="w-24 h-24 mx-auto mb-6 rounded-full border border-[#D4AF37]/50 flex items-center justify-center bg-[#D4AF37]/5 shadow-[0_0_30px_rgba(212,175,55,0.15)]">
+                    <span class="text-4xl">🍽️</span>
+                </div>
+                <h1 class="text-3xl font-bold gold-gradient mb-2 serif">Coral Beach</h1>
+                <p class="text-xs tracking-[0.2em] text-slate-400 uppercase font-semibold">Welcome to our Lounge</p>
+            </div>
+            
+            <div class="glass-card w-full p-8 mb-8 animate-slide-up" style="animation-delay: 0.1s;">
+                <p class="text-sm text-slate-400 uppercase tracking-widest font-bold mb-2">You are seated at</p>
+                <div class="text-6xl font-black text-white serif mb-1" id="step1-table-num">--</div>
+                <p class="text-xs text-[#D4AF37]">Premium Ocean View</p>
+            </div>
+            
+            <button onclick="goToStep2()" class="w-full bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_25px_rgba(212,175,55,0.3)] animate-slide-up uppercase" style="animation-delay: 0.2s;">
+                Confirm Table
+            </button>
+        </div>
+
+        <div id="step-2" class="panel slide-in-right justify-center px-6 hidden-state">
+            <button onclick="goToStep1()" class="absolute top-10 left-6 text-slate-400 p-2 text-xl btn-press">&larr; Back</button>
+            
+            <div class="mb-10 text-center animate-slide-up">
+                <h2 class="text-3xl font-bold gold-gradient mb-3 serif">Who is joining us?</h2>
+                <p class="text-sm text-slate-400">Let us personalize your experience.</p>
+            </div>
+            
+            <div class="space-y-6 w-full animate-slide-up" style="animation-delay: 0.1s;">
+                <div class="glass-card p-5">
+                    <label class="block text-xs font-bold tracking-widest text-[#D4AF37] uppercase mb-3">Family / Group Name</label>
+                    <input type="text" id="guest-name-input" placeholder="e.g. Smith Family" class="w-full bg-transparent text-white text-xl border-b border-white/20 pb-2 outline-none focus:border-[#D4AF37] transition placeholder-slate-600 font-serif">
+                </div>
+                
+                <div class="glass-card p-5 flex justify-between items-center">
+                    <label class="block text-xs font-bold tracking-widest text-[#D4AF37] uppercase">Number of Guests</label>
+                    <div class="flex items-center gap-4 bg-slate-800/80 rounded-xl p-1 shadow-inner border border-white/5">
+                        <button onclick="adjustPartySize(-1)" class="w-10 h-10 flex items-center justify-center text-xl text-white btn-press rounded-lg hover:bg-white/5">-</button>
+                        <span id="party-size-display" class="font-black text-xl w-6 text-center text-white">1</span>
+                        <button onclick="adjustPartySize(1)" class="w-10 h-10 flex items-center justify-center text-xl text-[#D4AF37] btn-press rounded-lg hover:bg-[#D4AF37]/10">+</button>
+                    </div>
+                </div>
+            </div>
+            
+            <button onclick="goToMenu()" class="w-full mt-10 bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_25px_rgba(212,175,55,0.3)] animate-slide-up uppercase" style="animation-delay: 0.2s;">
+                Open Menu
+            </button>
+        </div>
+
+
+        <div id="step-3" class="panel slide-in-right pb-28 hidden-state" style="overflow-y: auto;">
+            <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent sticky top-0 z-40">
                 <div>
-                    <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
-                    <p class="text-[10px] tracking-[0.2em] text-slate-400 uppercase font-semibold">Restaurant & Lounge</p>
+                    <h1 class="text-2xl font-bold gold-gradient mb-1">Coral Beach</h1>
+                    <p id="menu-greeting" class="text-[10px] tracking-[0.1em] text-slate-400 uppercase font-semibold">Welcome, Guest</p>
                 </div>
                 <div class="px-4 py-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 flex flex-col items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.1)]">
                     <span class="text-[9px] text-[#D4AF37] uppercase tracking-widest mb-0.5">Table</span>
@@ -282,13 +356,13 @@ async def serve_frontend():
                 </div>
             </header>
 
-            <div class="sticky top-0 z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav">
+            <div class="sticky top-[72px] z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-3 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav">
                 </div>
 
             <div id="guest-menu" class="p-5 space-y-5">
                 </div>
 
-            <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+            <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)] bg-dark/95 backdrop-blur-xl">
                 <div class="flex gap-3">
                     <button onclick="requestService('waiter')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
                         <span class="text-xl mb-0.5">🙋‍♂️</span>
@@ -343,7 +417,7 @@ async def serve_frontend():
         </div>
 
 
-        <div id="staff-view" class="hidden p-5">
+        <div id="staff-view" class="hidden p-5 bg-dark min-h-screen">
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-2xl font-bold gold-gradient serif">Staff Dashboard</h2>
                 <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
@@ -384,11 +458,15 @@ async def serve_frontend():
             const tg = window.Telegram.WebApp;
             const initData = tg.initData;
             
-            // State
+            // App State
             let secureToken = null;
             let currentTable = null;
             let fullMenu = [];
             let cart = [];
+            
+            // Guest Session State
+            let guestName = "Guest";
+            let partySize = 1;
             
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -408,11 +486,11 @@ async def serve_frontend():
                 secureToken = urlParams.get('table_token');
 
                 if (secureToken) {
-                    // GUEST MODE (Accessed via Standard Camera QR Scan)
-                    document.getElementById('guest-view').classList.remove('hidden');
-                    await initGuestMode();
+                    // Start Guest Onboarding Flow
+                    document.getElementById('step-1').classList.remove('hidden-state');
+                    await fetchTableAndMenu();
                 } else if (initData) {
-                    // STAFF MODE (Accessed via Telegram Bot)
+                    // STAFF MODE
                     tg.expand(); tg.ready();
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
@@ -421,12 +499,15 @@ async def serve_frontend():
                 }
             }
 
-            // ================= GUEST LOGIC =================
-            async function initGuestMode() {
+            // ================= GUEST ONBOARDING & NAVIGATION =================
+            
+            async function fetchTableAndMenu() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
                     if (!tRes.ok) throw new Error("Invalid Table");
                     currentTable = await tRes.json();
+                    
+                    document.getElementById('step1-table-num').innerText = currentTable.table_number;
                     document.getElementById('display-table-num').innerText = currentTable.table_number;
                     
                     const mRes = await apiFetch(`/api/guest/menu`);
@@ -439,6 +520,73 @@ async def serve_frontend():
                 }
             }
 
+            function goToStep2() {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                const step1 = document.getElementById('step-1');
+                const step2 = document.getElementById('step-2');
+                
+                step1.classList.remove('slide-active');
+                step1.classList.add('slide-out-left');
+                
+                setTimeout(() => {
+                    step1.classList.add('hidden-state');
+                    step2.classList.remove('hidden-state');
+                    // Trigger reflow
+                    void step2.offsetWidth;
+                    step2.classList.remove('slide-in-right');
+                    step2.classList.add('slide-active');
+                }, 300);
+            }
+
+            function goToStep1() {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                const step1 = document.getElementById('step-1');
+                const step2 = document.getElementById('step-2');
+                
+                step2.classList.remove('slide-active');
+                step2.classList.add('slide-in-right'); // Push back to right
+                
+                setTimeout(() => {
+                    step2.classList.add('hidden-state');
+                    step1.classList.remove('hidden-state');
+                    step1.classList.remove('slide-out-left');
+                    step1.classList.add('slide-active');
+                }, 300);
+            }
+
+            function adjustPartySize(delta) {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+                let current = parseInt(document.getElementById('party-size-display').innerText);
+                if (current + delta > 0 && current + delta <= 20) {
+                    document.getElementById('party-size-display').innerText = current + delta;
+                }
+            }
+
+            function goToMenu() {
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+                
+                guestName = document.getElementById('guest-name-input').value.trim() || "Guest";
+                partySize = parseInt(document.getElementById('party-size-display').innerText);
+                
+                document.getElementById('menu-greeting').innerText = `Welcome, ${guestName}`;
+                
+                const step2 = document.getElementById('step-2');
+                const step3 = document.getElementById('step-3');
+                
+                step2.classList.remove('slide-active');
+                step2.classList.add('slide-out-left');
+                
+                setTimeout(() => {
+                    step2.classList.add('hidden-state');
+                    step3.classList.remove('hidden-state');
+                    void step3.offsetWidth;
+                    step3.classList.remove('slide-in-right');
+                    step3.classList.add('slide-active');
+                }, 300);
+            }
+
+            // ================= GUEST MENU LOGIC =================
+            
             function renderCategories(cats) {
                 if(!cats.length) cats = ["Main Course"];
                 let html = `<button onclick="filterMenu('All')" class="px-5 py-2.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold tracking-wide transition">All Items</button>`;
@@ -549,7 +697,13 @@ async def serve_frontend():
                 btn.innerText = "SENDING ORDER..."; btn.disabled = true;
                 
                 try {
-                    const res = await apiFetch('/api/guest/order', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, cart: cart }) });
+                    const payload = { 
+                        secure_token: secureToken, 
+                        guest_name: guestName,
+                        party_size: partySize,
+                        cart: cart 
+                    };
+                    const res = await apiFetch('/api/guest/order', { method: 'POST', body: JSON.stringify(payload) });
                     if (res.ok) {
                         showToast("✅ Order Sent to Kitchen!");
                         cart = []; updateCartBadge(); closeCart();
@@ -561,7 +715,7 @@ async def serve_frontend():
             async function requestService(type) {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 try {
-                    await apiFetch('/api/guest/service', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, type: type }) });
+                    await apiFetch('/api/guest/service', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, type: type, guest_name: guestName }) });
                     showToast(type === 'waiter' ? "🙋‍♂️ Waiter called. Please wait." : "💳 Bill requested. Staff will be with you shortly.");
                 } catch(e) { showToast("Error connecting to staff."); }
             }
