@@ -226,6 +226,20 @@ def clear_table(table_id: int, staff: Staff = Depends(get_current_staff), db: Se
     if table: table.status = "available"; db.commit()
     return {"status": "success"}
 
+@app.post("/api/staff/menu")
+async def add_menu_item(req: Request, staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
+    data = await req.json()
+    db.add(MenuItem(
+        name=data['name'], 
+        description=data.get('description',''), 
+        price_thb=float(data['price']), 
+        category=data.get('category','Main Course'), 
+        dietary_tags=data.get('tags',''), 
+        image_base64=data.get('image','')
+    ))
+    db.commit()
+    return {"status": "success"}
+
 # ==========================================
 # 6. FRONTEND (PREMIUM GUEST UI & STAFF UI)
 # ==========================================
@@ -396,12 +410,34 @@ async def serve_frontend():
                 <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
             </div>
             
+            <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5">
+                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables</button>
+                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition">Menu Mgmt</button>
+            </div>
+
             <div id="staff-tables-view">
                 <div class="glass-card p-4 mb-6 flex gap-3 border-[#D4AF37]/20 rounded-2xl">
                     <input type="text" id="new-table-num" placeholder="Table No (e.g. VIP-1)" class="flex-1 bg-slate-800/80 text-white px-4 py-3 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
                     <button onclick="createTable()" class="bg-gold text-dark font-bold px-5 rounded-xl btn-press text-sm">Create</button>
                 </div>
                 <div id="staff-table-list" class="grid grid-cols-2 gap-4"></div>
+            </div>
+
+            <div id="staff-menu-view" class="hidden">
+                <div class="glass-card p-6 mb-4 space-y-4 rounded-2xl">
+                    <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-2">Add New Menu Item</h3>
+                    <input type="text" id="new-m-name" placeholder="Item Name" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="number" id="new-m-price" placeholder="Price (THB)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="text" id="new-m-cat" placeholder="Category (e.g. Signature Cocktails)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="text" id="new-m-tags" placeholder="Tags (e.g. Vegan, Gluten-Free)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <textarea id="new-m-desc" placeholder="Appetizing description..." class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] h-24 resize-none text-sm"></textarea>
+                    <div class="bg-slate-800/50 p-3 rounded-xl border border-white/5 border-dashed">
+                        <label class="block text-xs font-bold text-slate-400 mb-2">Upload Image</label>
+                        <input type="file" id="new-m-img" accept="image/*" class="text-xs text-slate-400 w-full file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-[#D4AF37]/10 file:text-[#D4AF37]" onchange="convertImg(this)">
+                    </div>
+                    <input type="hidden" id="new-m-img-b64">
+                    <button onclick="addMenuItem()" class="w-full bg-gold text-dark font-black py-4 rounded-xl mt-4 btn-press text-sm tracking-wide">SAVE MENU ITEM</button>
+                </div>
             </div>
         </div>
 
@@ -469,7 +505,6 @@ async def serve_frontend():
                 }
             }
 
-            // Slide back Step 1, Bring Step 2 forward
             function goToStep2() {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
                 const step1 = document.getElementById('step-1');
@@ -486,7 +521,6 @@ async def serve_frontend():
                 document.getElementById('guest-pax-count').innerText = guestDetails.paxCount;
             }
 
-            // Slide back Step 2, Fade out Auth Container, Fade in Main Menu
             function goToStep3() {
                 let nameInput = document.getElementById('guest-group-name').value.trim();
                 if (!nameInput) {
@@ -648,6 +682,13 @@ async def serve_frontend():
             }
 
             // ================= STAFF LOGIC =================
+            function switchStaffTab(tab) {
+                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
+                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
+                document.getElementById('staff-tables-view').style.display = tab === 'tables' ? 'block' : 'none';
+                document.getElementById('staff-menu-view').style.display = tab === 'menu' ? 'block' : 'none';
+            }
+
             async function loadStaffTables() {
                 const res = await apiFetch('/api/staff/tables');
                 const tables = await res.json();
@@ -681,6 +722,41 @@ async def serve_frontend():
                     await apiFetch(`/api/staff/tables/${id}/clear`, { method: 'POST' });
                     loadStaffTables();
                 }
+            }
+
+            function convertImg(el) {
+                let file = el.files[0]; if(!file) return; let reader = new FileReader();
+                reader.onloadend = function(e) { 
+                    let img = new Image(); img.onload = function() {
+                        let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
+                        let maxW = 600; let maxH = 600; let width = img.width; let height = img.height;
+                        if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } else { if (height > maxH) { width *= maxH / height; height = maxH; } }
+                        canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
+                        document.getElementById('new-m-img-b64').value = canvas.toDataURL('image/jpeg', 0.8);
+                    }; img.src = e.target.result;
+                }; reader.readAsDataURL(file);
+            }
+
+            async function addMenuItem() {
+                const payload = {
+                    name: document.getElementById('new-m-name').value,
+                    price: document.getElementById('new-m-price').value,
+                    category: document.getElementById('new-m-cat').value || 'Main Course',
+                    tags: document.getElementById('new-m-tags').value,
+                    description: document.getElementById('new-m-desc').value,
+                    image: document.getElementById('new-m-img-b64').value
+                };
+                if(!payload.name || !payload.price) return showToast("Name and price required");
+                
+                const btn = document.querySelector('#staff-menu-view button');
+                btn.innerText = "SAVING...";
+                await apiFetch('/api/staff/menu', { method: 'POST', body: JSON.stringify(payload) });
+                btn.innerText = "SAVE MENU ITEM";
+                showToast("Menu Item Added");
+                
+                document.getElementById('new-m-name').value = '';
+                document.getElementById('new-m-price').value = '';
+                document.getElementById('new-m-desc').value = '';
             }
 
             window.onload = initApp;
