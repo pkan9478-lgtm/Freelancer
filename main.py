@@ -72,7 +72,7 @@ class DineInOrder(Base):
     id = Column(Integer, primary_key=True)
     table_id = Column(Integer, ForeignKey("restaurant_tables.id"))
     total_thb = Column(Float, default=0.0)
-    status = Column(String, default="pending") 
+    status = Column(String, default="received") 
     guest_count = Column(Integer, default=1)  
     group_name = Column(String, default="Guest") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -225,35 +225,6 @@ def clear_table(table_id: int, staff: Staff = Depends(get_current_staff), db: Se
     if table: table.status = "available"; db.commit()
     return {"status": "success"}
 
-# --- NEW: ORDER MANAGEMENT APIs ---
-@app.get("/api/staff/orders/active")
-def get_active_orders(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
-    orders = db.query(DineInOrder).filter(DineInOrder.status != "paid").order_by(DineInOrder.id.desc()).all()
-    res = []
-    for o in orders:
-        items_list = []
-        for i in o.items:
-            if i.menu_item:
-                items_list.append({"name": i.menu_item.name, "qty": i.quantity, "price": i.price_at_order, "notes": i.special_requests})
-        if o.table:
-            res.append({
-                "id": o.id, "table_num": o.table.table_number, "group": o.group_name,
-                "pax": o.guest_count, "total": o.total_thb, "status": o.status,
-                "items": items_list, "time": o.created_at.strftime("%H:%M")
-            })
-    return res
-
-@app.post("/api/staff/orders/{order_id}/pay")
-def pay_order(order_id: int, staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
-    order = db.query(DineInOrder).filter(DineInOrder.id == order_id).first()
-    if order:
-        order.status = "paid"
-        if order.table:
-            order.table.status = "available"
-        db.commit()
-    return {"status": "success"}
-
-# --- MENU APIs ---
 @app.get("/api/staff/menu")
 def get_staff_menu_list(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
     items = db.query(MenuItem).order_by(MenuItem.id.desc()).all()
@@ -450,10 +421,9 @@ async def serve_frontend():
                 <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
             </div>
             
-            <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5 text-[11px] font-bold tracking-wide">
-                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-3 rounded-lg bg-slate-700 text-white shadow-sm transition">TABLES/POS</button>
-                <button onclick="switchStaffTab('orders')" id="s-tab-orders" class="flex-1 py-3 rounded-lg text-slate-400 hover:text-white transition">BILLS/ORDERS</button>
-                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-3 rounded-lg text-slate-400 hover:text-white transition">MENU MGMT</button>
+            <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5">
+                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables (POS)</button>
+                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition">Menu Mgmt</button>
             </div>
 
             <div id="staff-tables-view">
@@ -462,12 +432,6 @@ async def serve_frontend():
                     <button onclick="createTable()" class="bg-gold text-dark font-bold px-5 rounded-xl btn-press text-sm">Create</button>
                 </div>
                 <div id="staff-table-list" class="grid grid-cols-2 gap-4"></div>
-            </div>
-
-            <div id="staff-orders-view" class="hidden">
-                <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-4">Active Orders</h3>
-                <div id="staff-orders-list" class="space-y-4 max-h-[65vh] overflow-y-auto pr-2 pb-20">
-                    </div>
             </div>
 
             <div id="staff-menu-view" class="hidden">
@@ -488,7 +452,7 @@ async def serve_frontend():
                 
                 <div class="glass-card p-6 rounded-2xl">
                     <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-4">Current Menu Items</h3>
-                    <div id="staff-menu-list" class="space-y-3 max-h-[50vh] overflow-y-auto pr-2 pb-20"></div>
+                    <div id="staff-menu-list" class="space-y-3 max-h-[50vh] overflow-y-auto pr-2"></div>
                 </div>
             </div>
         </div>
@@ -554,21 +518,24 @@ async def serve_frontend():
                 }
             }
 
-            // 🌟 ADMIN POS CONTROL SYSTEM
+            // 🌟 NEW: ADMIN POS CONTROL SYSTEM
             function openAdminPOS(token) {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
-                secureToken = token; 
+                secureToken = token; // Set the table token for the admin
                 
+                // Hide Staff View, Show Guest View with Back Button
                 document.getElementById('staff-view').classList.add('hidden');
                 document.getElementById('guest-view').classList.remove('hidden');
                 document.getElementById('admin-back-btn').classList.remove('hidden');
                 
+                // Reset Guest UI to Step 1
                 document.getElementById('step-1').className = "step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
                 document.getElementById('step-2').className = "step-card step-future glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
                 document.getElementById('step-3').classList.add('hidden');
                 document.getElementById('auth-container').style.display = 'flex';
                 document.getElementById('auth-container').style.opacity = '1';
                 
+                // Reset Guest Data
                 document.getElementById('guest-group-name').value = '';
                 guestDetails.paxCount = 2; document.getElementById('guest-pax-count').innerText = '2';
                 cart = []; updateCartBadge();
@@ -580,11 +547,12 @@ async def serve_frontend():
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
                 secureToken = null;
                 
+                // Hide Guest View, Show Staff View
                 document.getElementById('guest-view').classList.add('hidden');
                 document.getElementById('admin-back-btn').classList.add('hidden');
                 document.getElementById('staff-view').classList.remove('hidden');
                 
-                loadStaffTables(); 
+                loadStaffTables(); // Refresh table status
             }
 
             function goToStep2() {
@@ -730,7 +698,7 @@ async def serve_frontend():
                         showToast("✅ Order Sent to Kitchen!"); 
                         cart = []; updateCartBadge(); closeCart(); 
                         if(document.getElementById('admin-back-btn').classList.contains('hidden') === false){
-                            setTimeout(() => exitAdminPOS(), 1500); 
+                            setTimeout(() => exitAdminPOS(), 1500); // Auto exit POS mode after order if admin
                         }
                     } else throw new Error();
                 } catch(e) { showToast("⚠️ Error connecting to kitchen."); }
@@ -745,21 +713,13 @@ async def serve_frontend():
                 } catch(e) { showToast("Error connecting to staff."); }
             }
 
-            // ================= FULL STAFF LOGIC =================
+            // ================= STAFF LOGIC =================
             function switchStaffTab(tab) {
-                // Update buttons
-                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-3 rounded-lg bg-slate-700 text-white shadow-sm transition' : 'flex-1 py-3 rounded-lg text-slate-400 hover:text-white transition';
-                document.getElementById('s-tab-orders').className = tab === 'orders' ? 'flex-1 py-3 rounded-lg bg-slate-700 text-white shadow-sm transition' : 'flex-1 py-3 rounded-lg text-slate-400 hover:text-white transition';
-                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-3 rounded-lg bg-slate-700 text-white shadow-sm transition' : 'flex-1 py-3 rounded-lg text-slate-400 hover:text-white transition';
-                
-                // Update views
+                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
+                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
                 document.getElementById('staff-tables-view').style.display = tab === 'tables' ? 'block' : 'none';
-                document.getElementById('staff-orders-view').style.display = tab === 'orders' ? 'block' : 'none';
                 document.getElementById('staff-menu-view').style.display = tab === 'menu' ? 'block' : 'none';
                 
-                // Fetch fresh data based on tab
-                if (tab === 'tables') loadStaffTables();
-                if (tab === 'orders') loadActiveOrders();
                 if (tab === 'menu') loadStaffMenu();
             }
 
@@ -784,7 +744,7 @@ async def serve_frontend():
                             </div>
                         </div>`;
                     }).join('');
-                } catch(e) { showToast("Failed to load tables"); }
+                } catch(e) { showToast("Failed to load tables. Retrying..."); }
             }
 
             async function createTable() {
@@ -796,70 +756,10 @@ async def serve_frontend():
             }
 
             async function clearTable(id) {
-                if(confirm('Reset this table? (Use Orders tab for billing!)')) {
+                if(confirm('Reset this table to Available?')) {
                     await apiFetch(`/api/staff/tables/${id}/clear`, { method: 'POST' });
                     loadStaffTables();
                 }
-            }
-
-            // 🌟 NEW: LOAD ACTIVE ORDERS & BILLING
-            async function loadActiveOrders() {
-                try {
-                    const res = await apiFetch('/api/staff/orders/active');
-                    if(!res.ok) throw new Error();
-                    const orders = await res.json();
-                    const container = document.getElementById('staff-orders-list');
-                    
-                    if (orders.length === 0) {
-                        container.innerHTML = `<div class="text-center py-10"><span class="text-4xl block mb-2">🍽️</span><p class="text-slate-400 text-xs italic">No active orders right now.</p></div>`;
-                        return;
-                    }
-                    
-                    container.innerHTML = orders.map(o => `
-                        <div class="glass-card p-5 rounded-2xl border border-[#D4AF37]/20 shadow-md">
-                            <div class="flex justify-between items-start mb-4 border-b border-white/5 pb-3">
-                                <div>
-                                    <div class="text-[#D4AF37] font-black text-xl mb-1 serif">Table ${o.table_num}</div>
-                                    <div class="text-slate-400 text-[10px] uppercase font-bold tracking-widest">${o.group} (${o.pax} Pax) • ${o.time}</div>
-                                </div>
-                                <div class="text-right">
-                                    <div class="text-white font-black text-lg mb-1">฿${o.total.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
-                                    <div class="text-[9px] uppercase font-bold px-2.5 py-1 rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/30 tracking-wide">${o.status}</div>
-                                </div>
-                            </div>
-                            <div class="space-y-2.5 mb-5">
-                                ${o.items.map(i => `
-                                    <div>
-                                        <div class="flex justify-between text-sm">
-                                            <span class="text-white font-semibold"><span class="text-[#D4AF37] mr-1.5">${i.qty}x</span> ${i.name}</span>
-                                            <span class="text-slate-300 font-bold">฿${(i.qty * i.price).toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
-                                        </div>
-                                        ${i.notes ? `<div class="text-[10px] text-slate-400 italic pl-6 mt-0.5 border-l-2 border-[#D4AF37]/30">Note: ${i.notes}</div>` : ''}
-                                    </div>
-                                `).join('')}
-                            </div>
-                            <button onclick="checkoutOrder(${o.id})" class="w-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-black py-3.5 rounded-xl text-xs tracking-widest btn-press uppercase shadow-sm">
-                                Settle Bill & Clear Table
-                            </button>
-                        </div>
-                    `).join('');
-                } catch (e) { showToast("Error loading active orders"); }
-            }
-
-            async function checkoutOrder(orderId) {
-                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
-                if(!confirm("Mark this order as PAID and clear the table for the next guest?")) return;
-                
-                try {
-                    const btn = event.target;
-                    btn.innerText = "PROCESSING..."; btn.disabled = true;
-                    
-                    const res = await apiFetch(`/api/staff/orders/${orderId}/pay`, { method: 'POST' });
-                    if(res.ok) {
-                        showToast("✅ Bill Settled & Table Cleared!");
-                        loadActiveOrders();
-                    } else throw new Error();
-                } catch(e) { showToast("⚠️ Error settling bill"); }
             }
 
             function convertImg(el) {
@@ -914,7 +814,7 @@ async def serve_frontend():
                     }
                     
                     listContainer.innerHTML = items.map(i => `
-                        <div class="flex items-center justify-between bg-dark/60 p-3 rounded-xl border border-white/5 shadow-sm">
+                        <div class="flex items-center justify-between bg-dark/60 p-3 rounded-xl border border-white/5">
                             <div class="flex items-center gap-3">
                                 ${i.image ? `<img src="${i.image}" class="w-10 h-10 object-cover rounded-lg shadow-sm">` : `<div class="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center text-[9px] text-slate-500 font-bold uppercase">No Img</div>`}
                                 <div>
