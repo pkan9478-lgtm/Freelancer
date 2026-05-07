@@ -131,7 +131,7 @@ def verify_table(secure_token: str, db: Session = Depends(get_db)):
 
 @app.get("/api/guest/menu")
 def get_menu_guest(db: Session = Depends(get_db)):
-    items = db.query(MenuItem).filter(MenuItem.is_available == True).all()
+    items = db.query(MenuItem).filter(MenuItem.is_available == True).order_by(MenuItem.id.desc()).all()
     categories = list(set([i.category for i in items]))
     return {"categories": categories, "items": [{"id": i.id, "name": i.name, "description": i.description, "price": i.price_thb, "category": i.category, "tags": i.dietary_tags, "image": i.image_base64} for i in items]}
 
@@ -168,7 +168,6 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
     table.status = "occupied"
     db.commit()
 
-    # DISPATCH TO TELEGRAM (STAFF)
     staff_members = db.query(Staff).all()
     dispatch_msg = (
         f"🔔 **NEW ORDER | Table {table.table_number}**\n"
@@ -209,7 +208,7 @@ async def request_service(req: Request, db: Session = Depends(get_db)):
 # ==========================================
 @app.get("/api/staff/tables")
 def get_staff_tables(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
-    tables = db.query(RestaurantTable).all()
+    tables = db.query(RestaurantTable).order_by(RestaurantTable.id.desc()).all()
     return [{"id": t.id, "number": t.table_number, "status": t.status, "token": t.secure_token} for t in tables]
 
 @app.post("/api/staff/tables")
@@ -226,7 +225,6 @@ def clear_table(table_id: int, staff: Staff = Depends(get_current_staff), db: Se
     if table: table.status = "available"; db.commit()
     return {"status": "success"}
 
-# --- Menu Management APIs (Add, Get List, Delete) ---
 @app.get("/api/staff/menu")
 def get_staff_menu_list(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
     items = db.query(MenuItem).order_by(MenuItem.id.desc()).all()
@@ -289,7 +287,7 @@ async def serve_frontend():
             .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             
             /* --- 3D SLIDE BACK ANIMATION SYSTEM --- */
-            #auth-container { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; perspective: 1200px; padding: 20px; z-index: 50; background: radial-gradient(circle at center, #1e2430 0%, #0f1115 100%); transition: opacity 0.5s ease;}
+            #auth-container { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; perspective: 1200px; padding: 20px; z-index: 40; background: radial-gradient(circle at center, #1e2430 0%, #0f1115 100%); transition: opacity 0.5s ease;}
             .step-card { position: absolute; width: 100%; max-width: 360px; transition: all 0.6s cubic-bezier(0.25, 1, 0.5, 1); backface-visibility: hidden; }
             
             .step-active { opacity: 1; transform: translateZ(0) translateY(0) scale(1); pointer-events: auto; z-index: 10; }
@@ -308,6 +306,10 @@ async def serve_frontend():
 
         <div id="guest-view" class="hidden">
             
+            <button id="admin-back-btn" onclick="exitAdminPOS()" class="hidden fixed top-4 left-4 z-50 bg-red-500/90 backdrop-blur-md text-white px-4 py-2 rounded-xl text-xs font-bold shadow-[0_4px_15px_rgba(239,68,68,0.4)] border border-red-400/50 btn-press">
+                ← Exit to Admin
+            </button>
+
             <div id="auth-container">
                 <div id="step-1" class="step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]">
                     <div class="w-16 h-16 mx-auto mb-4 bg-gold rounded-full flex items-center justify-center text-dark text-3xl shadow-[0_0_20px_rgba(212,175,55,0.4)]">📍</div>
@@ -347,8 +349,7 @@ async def serve_frontend():
 
             <div id="step-3" class="hidden">
                 <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
-                    <div>
-                        <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
+                    <div class="pl-24"> <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
                         <p class="text-[10px] tracking-[0.2em] text-slate-400 uppercase font-semibold">Restaurant & Lounge</p>
                     </div>
                     <div class="px-4 py-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 flex flex-col items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.1)]">
@@ -357,10 +358,10 @@ async def serve_frontend():
                     </div>
                 </header>
 
-                <div class="sticky top-0 z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav"></div>
+                <div class="sticky top-0 z-30 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav"></div>
                 <div id="guest-menu" class="p-5 space-y-5"></div>
 
-                <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+                <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-40 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
                     <div class="flex gap-3">
                         <button onclick="requestService('waiter')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
                             <span class="text-xl mb-0.5">🙋‍♂️</span>
@@ -421,7 +422,7 @@ async def serve_frontend():
             </div>
             
             <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5">
-                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables</button>
+                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables (POS)</button>
                 <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition">Menu Mgmt</button>
             </div>
 
@@ -451,8 +452,7 @@ async def serve_frontend():
                 
                 <div class="glass-card p-6 rounded-2xl">
                     <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-4">Current Menu Items</h3>
-                    <div id="staff-menu-list" class="space-y-3 max-h-[50vh] overflow-y-auto pr-2">
-                        </div>
+                    <div id="staff-menu-list" class="space-y-3 max-h-[50vh] overflow-y-auto pr-2"></div>
                 </div>
             </div>
         </div>
@@ -485,9 +485,11 @@ async def serve_frontend():
                 secureToken = urlParams.get('table_token');
 
                 if (secureToken) {
+                    // PURE GUEST MODE (Scan QR)
                     document.getElementById('guest-view').classList.remove('hidden');
                     await initGuestMode();
                 } else if (initData) {
+                    // STAFF / ADMIN MODE
                     tg.expand(); tg.ready();
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
@@ -496,7 +498,7 @@ async def serve_frontend():
                 }
             }
 
-            // ================= GUEST LOGIC =================
+            // ================= GUEST & POS LOGIC =================
             async function initGuestMode() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
@@ -512,8 +514,45 @@ async def serve_frontend():
                     renderCategories(mData.categories);
                     renderGuestMenu(fullMenu);
                 } catch (e) {
-                    document.getElementById('guest-view').innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl shadow-[0_0_20px_rgba(239,68,68,0.3)]'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
+                    showToast("Session Expired or Invalid");
                 }
+            }
+
+            // 🌟 NEW: ADMIN POS CONTROL SYSTEM
+            function openAdminPOS(token) {
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+                secureToken = token; // Set the table token for the admin
+                
+                // Hide Staff View, Show Guest View with Back Button
+                document.getElementById('staff-view').classList.add('hidden');
+                document.getElementById('guest-view').classList.remove('hidden');
+                document.getElementById('admin-back-btn').classList.remove('hidden');
+                
+                // Reset Guest UI to Step 1
+                document.getElementById('step-1').className = "step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                document.getElementById('step-2').className = "step-card step-future glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                document.getElementById('step-3').classList.add('hidden');
+                document.getElementById('auth-container').style.display = 'flex';
+                document.getElementById('auth-container').style.opacity = '1';
+                
+                // Reset Guest Data
+                document.getElementById('guest-group-name').value = '';
+                guestDetails.paxCount = 2; document.getElementById('guest-pax-count').innerText = '2';
+                cart = []; updateCartBadge();
+                
+                initGuestMode();
+            }
+
+            function exitAdminPOS() {
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+                secureToken = null;
+                
+                // Hide Guest View, Show Staff View
+                document.getElementById('guest-view').classList.add('hidden');
+                document.getElementById('admin-back-btn').classList.add('hidden');
+                document.getElementById('staff-view').classList.remove('hidden');
+                
+                loadStaffTables(); // Refresh table status
             }
 
             function goToStep2() {
@@ -655,7 +694,13 @@ async def serve_frontend():
                     const res = await apiFetch('/api/guest/order', { 
                         method: 'POST', body: JSON.stringify({ secure_token: secureToken, cart: cart, guest_pax: guestDetails.paxCount, group_name: guestDetails.groupName }) 
                     });
-                    if (res.ok) { showToast("✅ Order Sent to Kitchen!"); cart = []; updateCartBadge(); closeCart(); } else throw new Error();
+                    if (res.ok) { 
+                        showToast("✅ Order Sent to Kitchen!"); 
+                        cart = []; updateCartBadge(); closeCart(); 
+                        if(document.getElementById('admin-back-btn').classList.contains('hidden') === false){
+                            setTimeout(() => exitAdminPOS(), 1500); // Auto exit POS mode after order if admin
+                        }
+                    } else throw new Error();
                 } catch(e) { showToast("⚠️ Error connecting to kitchen."); }
                 finally { btn.innerText = "CONFIRM ORDER"; btn.disabled = false; }
             }
@@ -679,23 +724,27 @@ async def serve_frontend():
             }
 
             async function loadStaffTables() {
-                const res = await apiFetch('/api/staff/tables');
-                const tables = await res.json();
-                document.getElementById('staff-table-list').innerHTML = tables.map(t => {
-                    const qrLink = `${WEBAPP_URL}?table_token=${t.token}`;
-                    let stColor = t.status === 'available' ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 
-                                 (t.status === 'occupied' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' : 
-                                 'text-red-400 bg-red-400/10 border-red-400/20 animate-pulse');
-                    return `<div class="glass-card p-4.5 flex flex-col items-center text-center relative overflow-hidden rounded-[20px]">
-                        ${t.status !== 'available' ? '<div class="absolute top-0 left-0 w-full h-1 bg-[#D4AF37]"></div>' : ''}
-                        <div class="text-3xl font-bold text-white mb-2 serif">${t.number}</div>
-                        <div class="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${stColor} mb-4">${t.status.replace('_',' ')}</div>
-                        <div class="flex gap-2 w-full mt-auto">
-                            <button onclick="tg.openLink('https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrLink)}')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg transition">Get QR</button>
-                            <button onclick="clearTable(${t.id})" class="flex-1 border border-white/10 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition">Clear</button>
-                        </div>
-                    </div>`;
-                }).join('');
+                try {
+                    const res = await apiFetch('/api/staff/tables');
+                    if(!res.ok) throw new Error("Table Error");
+                    const tables = await res.json();
+                    document.getElementById('staff-table-list').innerHTML = tables.map(t => {
+                        const qrLink = `${WEBAPP_URL}?table_token=${t.token}`;
+                        let stColor = t.status === 'available' ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 
+                                     (t.status === 'occupied' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' : 
+                                     'text-red-400 bg-red-400/10 border-red-400/20 animate-pulse');
+                        return `<div class="glass-card p-4.5 flex flex-col items-center text-center relative overflow-hidden rounded-[20px]">
+                            ${t.status !== 'available' ? '<div class="absolute top-0 left-0 w-full h-1 bg-[#D4AF37]"></div>' : ''}
+                            <div class="text-3xl font-bold text-white mb-2 serif">${t.number}</div>
+                            <div class="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${stColor} mb-4">${t.status.replace('_',' ')}</div>
+                            <div class="grid grid-cols-2 gap-2 w-full mt-auto">
+                                <button onclick="openAdminPOS('${t.token}')" class="col-span-2 bg-gold text-dark text-[10px] uppercase font-bold tracking-widest py-2.5 rounded-lg transition shadow-[0_2px_10px_rgba(212,175,55,0.3)] btn-press">📝 Take Order (POS)</button>
+                                <button onclick="tg.openLink('https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrLink)}')" class="bg-slate-700 hover:bg-slate-600 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg transition btn-press">QR Code</button>
+                                <button onclick="clearTable(${t.id})" class="border border-white/10 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition btn-press">Clear</button>
+                            </div>
+                        </div>`;
+                    }).join('');
+                } catch(e) { showToast("Failed to load tables. Retrying..."); }
             }
 
             async function createTable() {
@@ -749,36 +798,36 @@ async def serve_frontend():
                 document.getElementById('new-m-img-b64').value = '';
                 document.getElementById('new-m-img').value = '';
                 
-                // Refresh list automatically after adding
                 loadStaffMenu();
             }
 
-            // Function to load menu items into the list view
             async function loadStaffMenu() {
-                const res = await apiFetch('/api/staff/menu');
-                const items = await res.json();
-                const listContainer = document.getElementById('staff-menu-list');
-                
-                if (items.length === 0) {
-                    listContainer.innerHTML = `<p class="text-slate-400 text-xs text-center italic py-4">No menu items found.</p>`;
-                    return;
-                }
-                
-                listContainer.innerHTML = items.map(i => `
-                    <div class="flex items-center justify-between bg-dark/60 p-3 rounded-xl border border-white/5">
-                        <div class="flex items-center gap-3">
-                            ${i.image ? `<img src="${i.image}" class="w-10 h-10 object-cover rounded-lg shadow-sm">` : `<div class="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center text-[9px] text-slate-500 font-bold uppercase">No Img</div>`}
-                            <div>
-                                <div class="text-white font-bold text-sm">${i.name}</div>
-                                <div class="text-[#D4AF37] text-xs font-black tracking-wide">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})} <span class="text-slate-500 font-semibold ml-1 text-[10px] uppercase tracking-widest">${i.category}</span></div>
+                try {
+                    const res = await apiFetch('/api/staff/menu');
+                    if(!res.ok) throw new Error("Menu Error");
+                    const items = await res.json();
+                    const listContainer = document.getElementById('staff-menu-list');
+                    
+                    if (items.length === 0) {
+                        listContainer.innerHTML = `<p class="text-slate-400 text-xs text-center italic py-4">No menu items found.</p>`;
+                        return;
+                    }
+                    
+                    listContainer.innerHTML = items.map(i => `
+                        <div class="flex items-center justify-between bg-dark/60 p-3 rounded-xl border border-white/5">
+                            <div class="flex items-center gap-3">
+                                ${i.image ? `<img src="${i.image}" class="w-10 h-10 object-cover rounded-lg shadow-sm">` : `<div class="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center text-[9px] text-slate-500 font-bold uppercase">No Img</div>`}
+                                <div>
+                                    <div class="text-white font-bold text-sm">${i.name}</div>
+                                    <div class="text-[#D4AF37] text-xs font-black tracking-wide">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})} <span class="text-slate-500 font-semibold ml-1 text-[10px] uppercase tracking-widest">${i.category}</span></div>
+                                </div>
                             </div>
+                            <button onclick="deleteMenuItem(${i.id})" class="text-red-400 bg-red-400/10 w-8 h-8 rounded-lg flex items-center justify-center font-bold border border-red-400/20 btn-press transition hover:bg-red-400/20 shadow-sm">✕</button>
                         </div>
-                        <button onclick="deleteMenuItem(${i.id})" class="text-red-400 bg-red-400/10 w-8 h-8 rounded-lg flex items-center justify-center font-bold border border-red-400/20 btn-press transition hover:bg-red-400/20 shadow-sm">✕</button>
-                    </div>
-                `).join('');
+                    `).join('');
+                } catch (e) { showToast("Error loading menu"); }
             }
 
-            // Function to delete a menu item
             async function deleteMenuItem(id) {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 if(!confirm('Are you sure you want to delete this menu item?')) return;
