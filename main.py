@@ -27,13 +27,19 @@ app = FastAPI(title="Premium Smart Dine-In System")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_headers=["*"], allow_methods=["*"])
 
 # ==========================================
-# 2. DATABASE MODELS (Production-Ready SQLite)
+# 2. DATABASE MODELS (Production-Ready)
 # ==========================================
 DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/premium_restaurant_pro.db")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 15})
+# FIX FOR RENDER.COM POSTGRESQL (check_same_thread issue)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+connect_args = {"check_same_thread": False, "timeout": 15} if "sqlite" in DATABASE_URL else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base() 
 
@@ -165,7 +171,7 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
     
     for staff in staff_members:
         try: bot.send_message(staff.telegram_id, dispatch_msg, parse_mode="Markdown")
-        except: pass # Ignore if staff blocked bot
+        except: pass 
         
     return {"status": "success", "order_id": new_order.id}
 
@@ -233,21 +239,21 @@ async def serve_frontend():
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
-        <title>Premium Dine-In</title>
+        <title>Coral Beach - Premium Dine-In</title>
         <style>
-            :root { --gold: #D4AF37; --dark: #121212; --slate: #1e293b; }
+            :root { --gold: #D4AF37; --dark: #0f1115; --slate: #1e2430; }
             body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; }
             h1, h2, h3, .serif { font-family: 'Playfair Display', serif; }
             
             .gold-gradient { background: linear-gradient(135deg, #F3E5AB, #D4AF37, #C5A028); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .bg-gold { background: linear-gradient(135deg, #D4AF37, #C5A028); }
             
-            .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 20px; }
+            .glass-card { background: rgba(30, 36, 48, 0.6); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 20px; }
             .btn-press:active { transform: scale(0.96); transition: transform 0.1s ease; }
             
-            .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 100; display: none; flex-direction: column; justify-content: flex-end; }
+            .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100; display: none; flex-direction: column; justify-content: flex-end; }
             .modal.active { display: flex; animation: fadeIn 0.3s; }
-            .modal-content { background: var(--slate); border-top-left-radius: 24px; border-top-right-radius: 24px; padding: 24px; border-top: 1px solid rgba(212, 175, 55, 0.3); }
+            .modal-content { background: var(--slate); border-top-left-radius: 28px; border-top-right-radius: 28px; padding: 28px; border-top: 1px solid rgba(212, 175, 55, 0.2); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
             
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
             @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
@@ -255,50 +261,63 @@ async def serve_frontend():
             
             #toast { visibility: hidden; background: #D4AF37; color: #000; text-align: center; border-radius: 12px; padding: 12px 20px; position: fixed; z-index: 1000; left: 50%; top: 40px; transform: translateX(-50%); font-weight: 800; font-size: 14px; box-shadow: 0 10px 25px rgba(212, 175, 55, 0.3); }
             #toast.show { visibility: visible; animation: fadeIn 0.3s, fadeIn 0.3s 3s reverse forwards; }
+            
+            /* Custom Scrollbar for sleek UI */
+            ::-webkit-scrollbar { width: 4px; height: 4px; }
+            ::-webkit-scrollbar-thumb { background: rgba(212, 175, 55, 0.3); border-radius: 10px; }
         </style>
     </head>
-    <body class="pb-24">
+    <body class="pb-28">
         <div id="toast">Message</div>
 
         <div id="guest-view" class="hidden">
-            <header class="p-6 pb-2 text-center">
-                <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
-                <p class="text-xs tracking-widest text-slate-400 uppercase">Restaurant & Bar</p>
-                <div class="mt-4 inline-block px-4 py-1.5 rounded-full border border-[#D4AF37]/30 bg-[#D4AF37]/10 text-[#D4AF37] text-xs font-bold tracking-wider">
-                    TABLE <span id="display-table-num">--</span>
+            <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
+                <div>
+                    <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
+                    <p class="text-[10px] tracking-[0.2em] text-slate-400 uppercase font-semibold">Restaurant & Lounge</p>
+                </div>
+                <div class="px-4 py-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 flex flex-col items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.1)]">
+                    <span class="text-[9px] text-[#D4AF37] uppercase tracking-widest mb-0.5">Table</span>
+                    <span id="display-table-num" class="text-white font-bold text-lg leading-none">--</span>
                 </div>
             </header>
 
-            <div class="sticky top-0 z-40 bg-dark/90 backdrop-blur-md border-b border-white/5 py-3 px-4 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav">
+            <div class="sticky top-0 z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav">
                 </div>
 
-            <div id="guest-menu" class="p-4 space-y-4">
+            <div id="guest-menu" class="p-5 space-y-5">
                 </div>
 
-            <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-white/10 p-4 flex justify-between items-center z-50 pb-safe">
-                <div class="flex gap-2">
-                    <button onclick="requestService('waiter')" class="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-xl bg-slate-800 btn-press">🙋‍♂️</button>
-                    <button onclick="requestService('bill')" class="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-xl bg-slate-800 btn-press">💳</button>
+            <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+                <div class="flex gap-3">
+                    <button onclick="requestService('waiter')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
+                        <span class="text-xl mb-0.5">🙋‍♂️</span>
+                        <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Call</span>
+                    </button>
+                    <button onclick="requestService('bill')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
+                        <span class="text-xl mb-0.5">💳</span>
+                        <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Bill</span>
+                    </button>
                 </div>
-                <button onclick="openCart()" class="bg-gold text-dark font-bold px-6 py-3 rounded-2xl flex items-center gap-3 btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)]">
-                    <span>View Order</span>
-                    <div id="cart-badge" class="bg-dark text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center hidden">0</div>
+                <button onclick="openCart()" class="bg-gold text-dark font-bold px-7 py-4 rounded-2xl flex items-center gap-4 btn-press shadow-[0_4px_25px_rgba(212,175,55,0.4)]">
+                    <span class="text-base tracking-wide">View Order</span>
+                    <div id="cart-badge" class="bg-dark text-white text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center hidden shadow-inner">0</div>
                 </button>
             </div>
         </div>
 
         <div id="cart-modal" class="modal" onclick="closeCart(event)">
             <div class="modal-content" onclick="event.stopPropagation()">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold gold-gradient">Your Order</h2>
-                    <button onclick="closeCart()" class="text-slate-400 text-2xl">&times;</button>
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-2xl font-bold gold-gradient tracking-wide">Your Order</h2>
+                    <button onclick="closeCart()" class="w-8 h-8 rounded-full bg-white/10 text-white flex items-center justify-center text-xl btn-press">&times;</button>
                 </div>
-                <div id="cart-items" class="max-h-[50vh] overflow-y-auto space-y-4 mb-6"></div>
-                <div class="flex justify-between items-center border-t border-white/10 pt-4 mb-6">
-                    <span class="text-slate-400 font-bold">Total</span>
-                    <span id="cart-total" class="text-2xl font-bold text-white">฿0.00</span>
+                <div id="cart-items" class="max-h-[50vh] overflow-y-auto space-y-4 mb-8 pr-2"></div>
+                <div class="flex justify-between items-end border-t border-[#D4AF37]/20 pt-6 mb-8">
+                    <span class="text-slate-400 font-bold tracking-wider uppercase text-sm">Total Amount</span>
+                    <span id="cart-total" class="text-3xl font-black text-white tracking-tight">฿0.00</span>
                 </div>
-                <button onclick="submitOrder()" class="w-full bg-gold text-dark font-bold py-4 rounded-2xl text-lg btn-press">Confirm Order</button>
+                <button onclick="submitOrder()" class="w-full bg-gold text-dark font-black tracking-wide py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)]">CONFIRM ORDER</button>
             </div>
         </div>
 
@@ -306,48 +325,57 @@ async def serve_frontend():
             <div class="modal-content" onclick="event.stopPropagation()">
                 <input type="hidden" id="modal-item-id">
                 <input type="hidden" id="modal-item-price">
-                <h3 id="modal-item-name" class="text-xl font-bold text-white mb-2">Item Name</h3>
-                <p class="text-sm text-slate-400 mb-4">Special dietary requirements or preparation instructions?</p>
-                <textarea id="modal-item-notes" placeholder="e.g. No spicy, dressing on the side..." class="w-full bg-slate-800 text-white border border-white/10 rounded-xl p-3 outline-none focus:border-[#D4AF37] transition mb-6 resize-none h-24"></textarea>
+                <h3 id="modal-item-name" class="text-2xl font-bold text-white mb-2 serif tracking-wide">Item Name</h3>
+                <div class="text-[#D4AF37] font-black text-lg mb-6" id="modal-item-price-display">฿0.00</div>
+                
+                <label class="block text-xs font-bold tracking-widest text-slate-400 uppercase mb-3">Special Requests & Dietary Options</label>
+                <textarea id="modal-item-notes" placeholder="e.g. No spicy, dressing on the side, allergies..." class="w-full bg-slate-800/50 text-white border border-white/10 rounded-2xl p-4 outline-none focus:border-[#D4AF37] transition mb-8 resize-none h-28 text-sm placeholder-slate-500"></textarea>
+                
                 <div class="flex justify-between items-center">
-                    <div class="flex items-center gap-4 bg-slate-800 rounded-xl p-1">
-                        <button onclick="adjustModalQty(-1)" class="w-10 h-10 flex items-center justify-center text-xl text-white">-</button>
-                        <span id="modal-item-qty" class="font-bold text-lg w-4 text-center">1</span>
-                        <button onclick="adjustModalQty(1)" class="w-10 h-10 flex items-center justify-center text-xl text-[#D4AF37]">+</button>
+                    <div class="flex items-center gap-5 bg-slate-800/80 border border-white/5 rounded-2xl p-1.5 shadow-inner">
+                        <button onclick="adjustModalQty(-1)" class="w-12 h-12 flex items-center justify-center text-2xl text-white btn-press hover:bg-white/5 rounded-xl">-</button>
+                        <span id="modal-item-qty" class="font-black text-xl w-6 text-center text-white">1</span>
+                        <button onclick="adjustModalQty(1)" class="w-12 h-12 flex items-center justify-center text-2xl text-[#D4AF37] btn-press hover:bg-[#D4AF37]/10 rounded-xl">+</button>
                     </div>
-                    <button onclick="addToCartConfirm()" class="bg-gold text-dark font-bold px-8 py-3.5 rounded-xl btn-press">Add to Order</button>
+                    <button onclick="addToCartConfirm()" class="bg-gold text-dark font-black tracking-wide px-8 py-4.5 rounded-2xl btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] text-base">Add to Order</button>
                 </div>
             </div>
         </div>
 
 
-        <div id="staff-view" class="hidden p-4">
-            <h2 class="text-2xl font-bold gold-gradient mb-6">Staff Dashboard</h2>
+        <div id="staff-view" class="hidden p-5">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-2xl font-bold gold-gradient serif">Staff Dashboard</h2>
+                <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
+            </div>
             
-            <div class="flex bg-slate-800 p-1 rounded-xl mb-6">
-                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2 rounded-lg bg-slate-700 text-white font-bold text-sm">Tables</button>
-                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2 rounded-lg text-slate-400 font-bold text-sm">Menu Mgmt</button>
+            <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5">
+                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables</button>
+                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition">Menu Mgmt</button>
             </div>
 
             <div id="staff-tables-view">
-                <div class="glass-card p-4 mb-4 flex gap-2">
-                    <input type="text" id="new-table-num" placeholder="Table No (e.g. T-01)" class="flex-1 bg-slate-800 text-white px-4 py-2 rounded-lg border border-white/10 outline-none">
-                    <button onclick="createTable()" class="bg-gold text-dark font-bold px-4 rounded-lg btn-press">Add</button>
+                <div class="glass-card p-4 mb-6 flex gap-3 border-[#D4AF37]/20">
+                    <input type="text" id="new-table-num" placeholder="Table No (e.g. VIP-1)" class="flex-1 bg-slate-800/80 text-white px-4 py-3 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <button onclick="createTable()" class="bg-gold text-dark font-bold px-5 rounded-xl btn-press text-sm">Create</button>
                 </div>
-                <div id="staff-table-list" class="grid grid-cols-2 gap-3"></div>
+                <div id="staff-table-list" class="grid grid-cols-2 gap-4"></div>
             </div>
 
             <div id="staff-menu-view" class="hidden">
-                <div class="glass-card p-5 mb-4 space-y-3">
-                    <h3 class="font-bold text-[#D4AF37]">Add Menu Item</h3>
-                    <input type="text" id="new-m-name" placeholder="Name" class="w-full bg-slate-800 text-white p-3 rounded-lg border border-white/10 outline-none">
-                    <input type="number" id="new-m-price" placeholder="Price (THB)" class="w-full bg-slate-800 text-white p-3 rounded-lg border border-white/10 outline-none">
-                    <input type="text" id="new-m-cat" placeholder="Category" class="w-full bg-slate-800 text-white p-3 rounded-lg border border-white/10 outline-none">
-                    <input type="text" id="new-m-tags" placeholder="Tags (Vegan, GF)" class="w-full bg-slate-800 text-white p-3 rounded-lg border border-white/10 outline-none">
-                    <textarea id="new-m-desc" placeholder="Description" class="w-full bg-slate-800 text-white p-3 rounded-lg border border-white/10 outline-none h-20"></textarea>
-                    <input type="file" id="new-m-img" accept="image/*" class="text-xs text-slate-400 w-full" onchange="convertImg(this)">
+                <div class="glass-card p-6 mb-4 space-y-4">
+                    <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-2">Add New Menu Item</h3>
+                    <input type="text" id="new-m-name" placeholder="Item Name" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="number" id="new-m-price" placeholder="Price (THB)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="text" id="new-m-cat" placeholder="Category (e.g. Signature Cocktails)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <input type="text" id="new-m-tags" placeholder="Tags (e.g. Vegan, Gluten-Free)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
+                    <textarea id="new-m-desc" placeholder="Appetizing description..." class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] h-24 resize-none text-sm"></textarea>
+                    <div class="bg-slate-800/50 p-3 rounded-xl border border-white/5 border-dashed">
+                        <label class="block text-xs font-bold text-slate-400 mb-2">Upload Image</label>
+                        <input type="file" id="new-m-img" accept="image/*" class="text-xs text-slate-400 w-full file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-[#D4AF37]/10 file:text-[#D4AF37]" onchange="convertImg(this)">
+                    </div>
                     <input type="hidden" id="new-m-img-b64">
-                    <button onclick="addMenuItem()" class="w-full bg-gold text-dark font-bold py-3 rounded-lg mt-2 btn-press">Save Item</button>
+                    <button onclick="addMenuItem()" class="w-full bg-gold text-dark font-black py-4 rounded-xl mt-4 btn-press text-sm tracking-wide">SAVE MENU ITEM</button>
                 </div>
             </div>
         </div>
@@ -371,7 +399,7 @@ async def serve_frontend():
 
             async function apiFetch(url, options = {}) {
                 const headers = { 'Content-Type': 'application/json' };
-                if (initData) headers['X-Telegram-Init-Data'] = initData; // Only if in Telegram WebApp
+                if (initData) headers['X-Telegram-Init-Data'] = initData; 
                 return fetch(url, { ...options, headers: { ...headers, ...options.headers }});
             }
 
@@ -389,7 +417,7 @@ async def serve_frontend():
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
                 } else {
-                    document.body.innerHTML = "<div class='p-10 text-center text-slate-400'>Please scan a Table QR code to order.</div>";
+                    document.body.innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-[#D4AF37] flex items-center justify-center text-[#D4AF37] text-3xl'>📱</div><h2 class='text-2xl font-bold text-white mb-3 serif'>Welcome to Coral Beach</h2><p class='text-slate-400 text-sm'>Please scan the secure QR code on your table to access the menu and place your order.</p></div>`;
                 }
             }
 
@@ -407,25 +435,25 @@ async def serve_frontend():
                     renderGuestMenu(fullMenu);
                     renderCategories(mData.categories);
                 } catch (e) {
-                    document.body.innerHTML = "<div class='p-10 text-center text-red-400 text-xl font-bold'>Session Expired or Invalid QR.<br>Please scan the table QR again.</div>";
+                    document.body.innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
                 }
             }
 
             function renderCategories(cats) {
                 if(!cats.length) cats = ["Main Course"];
-                let html = `<button onclick="filterMenu('All')" class="px-5 py-2 rounded-full border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold">All</button>`;
-                cats.forEach(c => { html += `<button onclick="filterMenu('${c}')" class="px-5 py-2 rounded-full border border-white/10 text-slate-400 whitespace-nowrap text-sm font-bold">${c}</button>`; });
+                let html = `<button onclick="filterMenu('All')" class="px-5 py-2.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold tracking-wide transition">All Items</button>`;
+                cats.forEach(c => { html += `<button onclick="filterMenu('${c}')" class="px-5 py-2.5 rounded-full border border-white/10 bg-slate-800/50 text-slate-300 hover:text-white whitespace-nowrap text-sm font-bold tracking-wide transition">${c}</button>`; });
                 document.getElementById('category-nav').innerHTML = html;
             }
 
             function filterMenu(cat) {
-                // UI Highlight
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 const btns = document.getElementById('category-nav').children;
                 for(let b of btns) {
-                    if(b.innerText === cat || (cat === 'All' && b.innerText === 'All')) {
-                        b.className = "px-5 py-2 rounded-full border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold";
+                    if(b.innerText === cat || (cat === 'All' && b.innerText === 'All Items')) {
+                        b.className = "px-5 py-2.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold tracking-wide transition";
                     } else {
-                        b.className = "px-5 py-2 rounded-full border border-white/10 text-slate-400 whitespace-nowrap text-sm font-bold";
+                        b.className = "px-5 py-2.5 rounded-full border border-white/10 bg-slate-800/50 text-slate-300 hover:text-white whitespace-nowrap text-sm font-bold tracking-wide transition";
                     }
                 }
                 const filtered = cat === 'All' ? fullMenu : fullMenu.filter(i => i.category === cat);
@@ -434,25 +462,27 @@ async def serve_frontend():
 
             function renderGuestMenu(items) {
                 document.getElementById('guest-menu').innerHTML = items.map((i, idx) => {
-                    const tagHtml = i.tags ? `<div class="text-[10px] text-[#D4AF37] font-bold tracking-wider uppercase mb-1">${i.tags}</div>` : '';
-                    const imgHtml = i.image ? `<img src="${i.image}" class="w-24 h-24 object-cover rounded-xl shrink-0">` : '';
-                    return `<div class="glass-card p-4 flex gap-4 items-center animate-slide-up" style="animation-delay: ${idx * 0.05}s">
+                    const tagHtml = i.tags ? `<div class="text-[9px] text-[#D4AF37] font-black tracking-[0.15em] uppercase mb-1.5 bg-[#D4AF37]/10 inline-block px-2 py-0.5 rounded border border-[#D4AF37]/20">${i.tags}</div>` : '';
+                    const imgHtml = i.image ? `<img src="${i.image}" class="w-28 h-28 object-cover rounded-xl shrink-0 shadow-md">` : '';
+                    return `<div class="glass-card p-4 flex gap-5 items-center animate-slide-up hover:border-[#D4AF37]/30 transition" style="animation-delay: ${idx * 0.05}s">
                         <div class="flex-1">
                             ${tagHtml}
-                            <h3 class="text-white font-bold text-lg leading-tight mb-1">${i.name}</h3>
-                            <p class="text-xs text-slate-400 line-clamp-2 mb-2">${i.description}</p>
-                            <div class="text-[#D4AF37] font-bold">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                            <h3 class="text-white font-bold text-lg leading-tight mb-1.5 serif">${i.name}</h3>
+                            <p class="text-xs text-slate-400 line-clamp-2 mb-3 leading-relaxed">${i.description}</p>
+                            <div class="text-[#D4AF37] font-black tracking-wide">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
                         </div>
                         ${imgHtml}
-                        <button onclick='openItemModal(${JSON.stringify(i).replace(/'/g, "&#39;")})' class="w-8 h-8 rounded-full bg-[#D4AF37] text-dark flex items-center justify-center font-bold text-xl btn-press shrink-0">+</button>
+                        <button onclick='openItemModal(${JSON.stringify(i).replace(/'/g, "&#39;")})' class="w-10 h-10 rounded-xl bg-gold text-dark flex items-center justify-center font-bold text-xl btn-press shrink-0 shadow-lg">+</button>
                     </div>`;
                 }).join('');
             }
 
             function openItemModal(item) {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 document.getElementById('modal-item-id').value = item.id;
                 document.getElementById('modal-item-name').innerText = item.name;
                 document.getElementById('modal-item-price').value = item.price;
+                document.getElementById('modal-item-price-display').innerText = `฿${item.price.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
                 document.getElementById('modal-item-qty').innerText = "1";
                 document.getElementById('modal-item-notes').value = "";
                 document.getElementById('item-modal').classList.add('active');
@@ -460,6 +490,7 @@ async def serve_frontend():
 
             function closeItemModal(e) { if(!e || e.target.id === 'item-modal') document.getElementById('item-modal').classList.remove('active'); }
             function adjustModalQty(delta) {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 let q = parseInt(document.getElementById('modal-item-qty').innerText) + delta;
                 if(q > 0) document.getElementById('modal-item-qty').innerText = q;
             }
@@ -471,7 +502,6 @@ async def serve_frontend():
                 const qty = parseInt(document.getElementById('modal-item-qty').innerText);
                 const notes = document.getElementById('modal-item-notes').value.trim();
                 
-                // For restaurant, we treat different notes as separate line items
                 cart.push({ id, name, price, qty, notes, cart_id: Date.now() });
                 
                 updateCartBadge();
@@ -487,20 +517,21 @@ async def serve_frontend():
             }
 
             function openCart() {
+                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
                 if(cart.length === 0) return showToast("Your order is empty");
                 
                 let total = 0;
                 document.getElementById('cart-items').innerHTML = cart.map(i => {
                     total += (i.price * i.qty);
-                    const notesHtml = i.notes ? `<div class="text-xs text-[#D4AF37] mt-1 italic">Note: ${i.notes}</div>` : '';
-                    return `<div class="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-white/5">
+                    const notesHtml = i.notes ? `<div class="text-xs text-[#D4AF37] mt-1.5 italic bg-[#D4AF37]/5 px-2 py-1 rounded border border-[#D4AF37]/10">Note: ${i.notes}</div>` : '';
+                    return `<div class="flex justify-between items-start bg-slate-800/80 p-4.5 rounded-2xl border border-white/5 shadow-sm">
                         <div class="flex-1 pr-4">
-                            <div class="text-white font-bold">${i.qty}x ${i.name}</div>
+                            <div class="text-white font-bold text-sm leading-snug"><span class="text-[#D4AF37] mr-1">${i.qty}x</span> ${i.name}</div>
                             ${notesHtml}
                         </div>
-                        <div class="text-right">
-                            <div class="text-white font-bold mb-1">฿${(i.price * i.qty).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
-                            <button onclick="removeCartItem(${i.cart_id})" class="text-xs text-red-400 font-bold uppercase tracking-wide">Remove</button>
+                        <div class="text-right shrink-0">
+                            <div class="text-white font-black tracking-wide mb-2">฿${(i.price * i.qty).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                            <button onclick="removeCartItem(${i.cart_id})" class="text-[10px] text-red-400 font-bold uppercase tracking-widest bg-red-400/10 px-2 py-1 rounded border border-red-400/20 btn-press">Remove</button>
                         </div>
                     </div>`;
                 }).join('');
@@ -510,12 +541,12 @@ async def serve_frontend():
             }
 
             function closeCart(e) { if(!e || e.target.id === 'cart-modal') document.getElementById('cart-modal').classList.remove('active'); }
-            function removeCartItem(cId) { cart = cart.filter(i => i.cart_id !== cId); openCart(); updateCartBadge(); if(cart.length===0) closeCart(); }
+            function removeCartItem(cId) { if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); cart = cart.filter(i => i.cart_id !== cId); openCart(); updateCartBadge(); if(cart.length===0) closeCart(); }
 
             async function submitOrder() {
                 if (cart.length === 0) return;
                 const btn = document.querySelector('#cart-modal button.bg-gold');
-                btn.innerText = "Sending..."; btn.disabled = true;
+                btn.innerText = "SENDING ORDER..."; btn.disabled = true;
                 
                 try {
                     const res = await apiFetch('/api/guest/order', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, cart: cart }) });
@@ -523,11 +554,12 @@ async def serve_frontend():
                         showToast("✅ Order Sent to Kitchen!");
                         cart = []; updateCartBadge(); closeCart();
                     } else throw new Error();
-                } catch(e) { showToast("⚠️ Error sending order."); }
-                finally { btn.innerText = "Confirm Order"; btn.disabled = false; }
+                } catch(e) { showToast("⚠️ Error connecting to kitchen."); }
+                finally { btn.innerText = "CONFIRM ORDER"; btn.disabled = false; }
             }
 
             async function requestService(type) {
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 try {
                     await apiFetch('/api/guest/service', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, type: type }) });
                     showToast(type === 'waiter' ? "🙋‍♂️ Waiter called. Please wait." : "💳 Bill requested. Staff will be with you shortly.");
@@ -536,8 +568,8 @@ async def serve_frontend():
 
             // ================= STAFF LOGIC =================
             function switchStaffTab(tab) {
-                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-2 rounded-lg bg-slate-700 text-white font-bold text-sm' : 'flex-1 py-2 rounded-lg text-slate-400 font-bold text-sm';
-                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2 rounded-lg bg-slate-700 text-white font-bold text-sm' : 'flex-1 py-2 rounded-lg text-slate-400 font-bold text-sm';
+                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
+                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
                 document.getElementById('staff-tables-view').style.display = tab === 'tables' ? 'block' : 'none';
                 document.getElementById('staff-menu-view').style.display = tab === 'menu' ? 'block' : 'none';
             }
@@ -547,13 +579,16 @@ async def serve_frontend():
                 const tables = await res.json();
                 document.getElementById('staff-table-list').innerHTML = tables.map(t => {
                     const qrLink = `${WEBAPP_URL}?table_token=${t.token}`;
-                    let stColor = t.status === 'available' ? 'text-emerald-400' : (t.status === 'occupied' ? 'text-blue-400' : 'text-red-400');
-                    return `<div class="glass-card p-4 flex flex-col items-center text-center">
-                        <div class="text-2xl font-bold text-white mb-1">${t.number}</div>
-                        <div class="text-xs font-bold uppercase ${stColor} mb-3">${t.status.replace('_',' ')}</div>
+                    let stColor = t.status === 'available' ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 
+                                 (t.status === 'occupied' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' : 
+                                 'text-red-400 bg-red-400/10 border-red-400/20 animate-pulse');
+                    return `<div class="glass-card p-4.5 flex flex-col items-center text-center relative overflow-hidden">
+                        ${t.status !== 'available' ? '<div class="absolute top-0 left-0 w-full h-1 bg-[#D4AF37]"></div>' : ''}
+                        <div class="text-3xl font-bold text-white mb-2 serif">${t.number}</div>
+                        <div class="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${stColor} mb-4">${t.status.replace('_',' ')}</div>
                         <div class="flex gap-2 w-full mt-auto">
-                            <button onclick="tg.openLink('https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrLink)}')" class="flex-1 bg-slate-700 text-xs py-2 rounded-lg font-bold">QR</button>
-                            <button onclick="clearTable(${t.id})" class="flex-1 border border-white/10 text-xs py-2 rounded-lg text-slate-400 hover:text-white">Clear</button>
+                            <button onclick="tg.openLink('https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrLink)}')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg transition">Get QR</button>
+                            <button onclick="clearTable(${t.id})" class="flex-1 border border-white/10 text-[10px] uppercase font-bold tracking-wide py-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition">Clear</button>
                         </div>
                     </div>`;
                 }).join('');
@@ -579,7 +614,7 @@ async def serve_frontend():
                 reader.onloadend = function(e) { 
                     let img = new Image(); img.onload = function() {
                         let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
-                        let maxW = 500; let maxH = 500; let width = img.width; let height = img.height;
+                        let maxW = 600; let maxH = 600; let width = img.width; let height = img.height;
                         if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } else { if (height > maxH) { width *= maxH / height; height = maxH; } }
                         canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
                         document.getElementById('new-m-img-b64').value = canvas.toDataURL('image/jpeg', 0.8);
@@ -599,9 +634,9 @@ async def serve_frontend():
                 if(!payload.name || !payload.price) return showToast("Name and price required");
                 
                 const btn = document.querySelector('#staff-menu-view button');
-                btn.innerText = "Saving...";
+                btn.innerText = "SAVING...";
                 await apiFetch('/api/staff/menu', { method: 'POST', body: JSON.stringify(payload) });
-                btn.innerText = "Save Item";
+                btn.innerText = "SAVE MENU ITEM";
                 showToast("Menu Item Added");
                 
                 document.getElementById('new-m-name').value = '';
