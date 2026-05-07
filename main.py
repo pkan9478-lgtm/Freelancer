@@ -33,7 +33,6 @@ DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/premium_restaurant_pro.db")
 
-# FIX FOR RENDER.COM POSTGRESQL (check_same_thread issue)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -48,7 +47,7 @@ class Staff(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, unique=True, index=True)
     full_name = Column(String)
-    role = Column(String, default="admin") # admin, waiter, kitchen
+    role = Column(String, default="admin")
 
 class MenuItem(Base):
     __tablename__ = "menu_items"
@@ -74,8 +73,8 @@ class DineInOrder(Base):
     table_id = Column(Integer, ForeignKey("restaurant_tables.id"))
     total_thb = Column(Float, default=0.0)
     status = Column(String, default="received") 
-    guest_count = Column(Integer, default=1)  # လူအရေအတွက်
-    group_name = Column(String, default="Guest") # မိသားစုအမည်
+    guest_count = Column(Integer, default=1)  
+    group_name = Column(String, default="Guest") 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     table = relationship("RestaurantTable")
     items = relationship("OrderItem", back_populates="order")
@@ -206,7 +205,7 @@ async def request_service(req: Request, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 # ==========================================
-# 5. STAFF DASHBOARD APIs (Menu Mgmt Removed)
+# 5. STAFF DASHBOARD APIs 
 # ==========================================
 @app.get("/api/staff/tables")
 def get_staff_tables(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
@@ -244,13 +243,13 @@ async def serve_frontend():
         <title>Coral Beach - Premium Dine-In</title>
         <style>
             :root { --gold: #D4AF37; --dark: #0f1115; --slate: #1e2430; }
-            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden;}
+            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; margin: 0; padding: 0;}
             h1, h2, h3, .serif { font-family: 'Playfair Display', serif; }
             
             .gold-gradient { background: linear-gradient(135deg, #F3E5AB, #D4AF37, #C5A028); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
             .bg-gold { background: linear-gradient(135deg, #D4AF37, #C5A028); }
             
-            .glass-card { background: rgba(30, 36, 48, 0.6); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 20px; }
+            .glass-card { background: rgba(30, 36, 48, 0.6); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.05); }
             .btn-press:active { transform: scale(0.96); transition: transform 0.1s ease; }
             
             .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100; display: none; flex-direction: column; justify-content: flex-end; }
@@ -261,11 +260,13 @@ async def serve_frontend():
             @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
             .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             
-            /* စခရင်များ နောက်ဆုတ်သွားသည့် (Slide back) Effect အတွက် CSS */
-            .step-container { position: relative; width: 100%; min-height: 100vh; }
-            .step-view { transition: opacity 0.5s ease, transform 0.5s ease; width: 100%; position: absolute; top: 0; left: 0; }
-            .step-active { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; z-index: 20; position: relative; min-height: 100vh;}
-            .step-hidden { opacity: 0; transform: scale(0.92) translateY(-30px); pointer-events: none; z-index: 10; }
+            /* --- 3D SLIDE BACK ANIMATION SYSTEM (ကျစ်လျစ်သော နောက်ဆုတ် Effect) --- */
+            #auth-container { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; perspective: 1200px; padding: 20px; z-index: 50; background: radial-gradient(circle at center, #1e2430 0%, #0f1115 100%); transition: opacity 0.5s ease;}
+            .step-card { position: absolute; width: 100%; max-width: 360px; transition: all 0.6s cubic-bezier(0.25, 1, 0.5, 1); backface-visibility: hidden; }
+            
+            .step-active { opacity: 1; transform: translateZ(0) translateY(0) scale(1); pointer-events: auto; z-index: 10; }
+            .step-past { opacity: 0; transform: translateZ(-200px) translateY(-50px) scale(0.85); pointer-events: none; z-index: 5; }
+            .step-future { opacity: 0; transform: translateZ(200px) translateY(50px) scale(1.15); pointer-events: none; z-index: 15; }
             
             #toast { visibility: hidden; background: #D4AF37; color: #000; text-align: center; border-radius: 12px; padding: 12px 20px; position: fixed; z-index: 1000; left: 50%; top: 40px; transform: translateX(-50%); font-weight: 800; font-size: 14px; box-shadow: 0 10px 25px rgba(212, 175, 55, 0.3); }
             #toast.show { visibility: visible; animation: fadeIn 0.3s, fadeIn 0.3s 3s reverse forwards; }
@@ -277,44 +278,48 @@ async def serve_frontend():
     <body class="pb-28">
         <div id="toast">Message</div>
 
-        <div id="guest-view" class="hidden step-container">
+        <div id="guest-view" class="hidden">
             
-            <div id="step-1" class="step-view step-active flex flex-col items-center justify-center px-6 bg-dark">
-                <h1 class="text-4xl font-bold gold-gradient mb-2 serif text-center">Welcome</h1>
-                <p class="text-slate-400 mb-10 text-center tracking-widest text-xs uppercase">Coral Beach Restaurant</p>
+            <div id="auth-container">
                 
-                <div class="glass-card p-10 text-center w-full max-w-sm mb-10 border-[#D4AF37]/20 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
-                    <p class="text-[10px] text-[#D4AF37] uppercase tracking-widest mb-3 font-bold">You are seated at Table</p>
-                    <div class="text-7xl font-black text-white mb-3 serif" id="step1-table-num">--</div>
-                    <p class="text-slate-400 text-xs mt-4">Please confirm to continue</p>
-                </div>
-                
-                <button onclick="goToStep2()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">Confirm Table</button>
-            </div>
-
-            <div id="step-2" class="step-view step-hidden flex flex-col items-center justify-center px-6 bg-dark">
-                <h2 class="text-3xl font-bold gold-gradient mb-8 serif text-center">Guest Details</h2>
-                
-                <div class="w-full max-w-sm space-y-6 mb-10">
-                    <div class="glass-card p-6 border-[#D4AF37]/10">
-                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-3">Group / Family Name</label>
-                        <input type="text" id="guest-group-name" placeholder="e.g. Smith Family" class="w-full bg-slate-800/80 text-white p-4 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] transition font-medium">
+                <div id="step-1" class="step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]">
+                    <div class="w-16 h-16 mx-auto mb-4 bg-gold rounded-full flex items-center justify-center text-dark text-3xl shadow-[0_0_20px_rgba(212,175,55,0.4)]">📍</div>
+                    <h2 class="text-2xl font-bold gold-gradient mb-1 serif">Table Verify</h2>
+                    <p class="text-slate-400 text-[10px] mb-8 uppercase tracking-widest font-bold">Coral Beach Restaurant</p>
+                    
+                    <div class="bg-dark/60 rounded-2xl p-6 mb-8 border border-white/5 shadow-inner">
+                        <span class="text-xs text-[#D4AF37] uppercase tracking-widest font-bold block mb-2">Table Number</span>
+                        <span class="text-6xl font-black text-white serif" id="step1-table-num">--</span>
                     </div>
                     
-                    <div class="glass-card p-6 border-[#D4AF37]/10">
-                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-3">Number of People</label>
-                        <div class="flex items-center justify-between bg-slate-800/80 border border-white/10 rounded-xl p-2">
-                            <button onclick="adjustPax(-1)" class="w-14 h-14 flex items-center justify-center text-3xl text-white rounded-lg hover:bg-white/5 transition btn-press">-</button>
+                    <button onclick="goToStep2()" class="w-full bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-sm btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">Confirm Table</button>
+                </div>
+
+                <div id="step-2" class="step-card step-future glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]">
+                    <div class="w-16 h-16 mx-auto mb-4 bg-gold rounded-full flex items-center justify-center text-dark text-3xl shadow-[0_0_20px_rgba(212,175,55,0.4)]">👥</div>
+                    <h2 class="text-2xl font-bold gold-gradient mb-1 serif">Welcome</h2>
+                    <p class="text-slate-400 text-[10px] mb-8 uppercase tracking-widest font-bold">Please enter details</p>
+                    
+                    <div class="text-left mb-5">
+                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-2 ml-1">Family / Group Name</label>
+                        <input type="text" id="guest-group-name" placeholder="e.g. Smith" class="w-full bg-dark/60 text-white p-4.5 rounded-2xl border border-white/5 outline-none focus:border-[#D4AF37] transition font-medium text-sm shadow-inner text-center">
+                    </div>
+                    
+                    <div class="text-left mb-8">
+                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-2 ml-1">Guest Count</label>
+                        <div class="flex items-center justify-between bg-dark/60 border border-white/5 rounded-2xl p-2 shadow-inner">
+                            <button onclick="adjustPax(-1)" class="w-14 h-14 flex items-center justify-center text-3xl text-slate-400 rounded-xl hover:bg-white/5 transition btn-press">-</button>
                             <span id="guest-pax-count" class="font-black text-3xl text-white serif w-12 text-center">2</span>
-                            <button onclick="adjustPax(1)" class="w-14 h-14 flex items-center justify-center text-3xl text-dark rounded-lg bg-gold shadow-md btn-press">+</button>
+                            <button onclick="adjustPax(1)" class="w-14 h-14 flex items-center justify-center text-3xl text-dark rounded-xl bg-gold shadow-md btn-press">+</button>
                         </div>
                     </div>
+                    
+                    <button onclick="goToStep3()" class="w-full bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-sm btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">View Food Menu</button>
                 </div>
                 
-                <button onclick="goToStep3()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">View Food Menu</button>
             </div>
 
-            <div id="step-3" class="step-view step-hidden pb-32">
+            <div id="step-3" class="hidden">
                 <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
                     <div>
                         <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
@@ -392,7 +397,7 @@ async def serve_frontend():
             </div>
             
             <div id="staff-tables-view">
-                <div class="glass-card p-4 mb-6 flex gap-3 border-[#D4AF37]/20">
+                <div class="glass-card p-4 mb-6 flex gap-3 border-[#D4AF37]/20 rounded-2xl">
                     <input type="text" id="new-table-num" placeholder="Table No (e.g. VIP-1)" class="flex-1 bg-slate-800/80 text-white px-4 py-3 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
                     <button onclick="createTable()" class="bg-gold text-dark font-bold px-5 rounded-xl btn-press text-sm">Create</button>
                 </div>
@@ -439,11 +444,11 @@ async def serve_frontend():
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
                 } else {
-                    document.body.innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-[#D4AF37] flex items-center justify-center text-[#D4AF37] text-3xl'>📱</div><h2 class='text-2xl font-bold text-white mb-3 serif'>Welcome to Coral Beach</h2><p class='text-slate-400 text-sm'>Please scan the secure QR code on your table to access the menu and place your order.</p></div>`;
+                    document.body.innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-[#D4AF37] flex items-center justify-center text-[#D4AF37] text-3xl shadow-[0_0_20px_rgba(212,175,55,0.4)]'>📱</div><h2 class='text-2xl font-bold text-white mb-3 serif'>Welcome to Coral Beach</h2><p class='text-slate-400 text-sm'>Please scan the secure QR code on your table to access the menu and place your order.</p></div>`;
                 }
             }
 
-            // ================= GUEST LOGIC (STEP FLOW - SLIDE BACK) =================
+            // ================= GUEST LOGIC (3D SLIDE BACK FLOW) =================
             async function initGuestMode() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
@@ -460,19 +465,18 @@ async def serve_frontend():
                     renderGuestMenu(fullMenu);
                     
                 } catch (e) {
-                    document.getElementById('guest-view').innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
+                    document.getElementById('guest-view').innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl shadow-[0_0_20px_rgba(239,68,68,0.3)]'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
                 }
             }
 
+            // Slide back Step 1, Bring Step 2 forward
             function goToStep2() {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-                document.getElementById('step-1').classList.remove('step-active');
-                document.getElementById('step-1').classList.add('step-hidden');
+                const step1 = document.getElementById('step-1');
+                const step2 = document.getElementById('step-2');
                 
-                setTimeout(() => {
-                    document.getElementById('step-2').classList.remove('step-hidden');
-                    document.getElementById('step-2').classList.add('step-active');
-                }, 200);
+                step1.className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                step2.className = "step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
             }
 
             function adjustPax(delta) {
@@ -482,24 +486,29 @@ async def serve_frontend():
                 document.getElementById('guest-pax-count').innerText = guestDetails.paxCount;
             }
 
+            // Slide back Step 2, Fade out Auth Container, Fade in Main Menu
             function goToStep3() {
                 let nameInput = document.getElementById('guest-group-name').value.trim();
                 if (!nameInput) {
-                    showToast("Please enter a Group / Family name");
+                    showToast("Please enter Group / Family name");
                     return;
                 }
                 
                 guestDetails.groupName = nameInput;
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 
-                document.getElementById('step-2').classList.remove('step-active');
-                document.getElementById('step-2').classList.add('step-hidden');
+                const step2 = document.getElementById('step-2');
+                step2.className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                
+                document.getElementById('auth-container').style.opacity = '0';
                 
                 setTimeout(() => {
-                    document.getElementById('step-3').classList.remove('step-hidden');
-                    document.getElementById('step-3').classList.add('step-active');
+                    document.getElementById('auth-container').style.display = 'none';
+                    const step3 = document.getElementById('step-3');
+                    step3.classList.remove('hidden');
+                    step3.style.animation = "fadeIn 0.6s ease forwards";
                     window.scrollTo({ top: 0, behavior: 'smooth' });
-                }, 200);
+                }, 500);
             }
 
             // ================= MENU & CART LOGIC =================
@@ -528,7 +537,7 @@ async def serve_frontend():
                 document.getElementById('guest-menu').innerHTML = items.map((i, idx) => {
                     const tagHtml = i.tags ? `<div class="text-[9px] text-[#D4AF37] font-black tracking-[0.15em] uppercase mb-1.5 bg-[#D4AF37]/10 inline-block px-2 py-0.5 rounded border border-[#D4AF37]/20">${i.tags}</div>` : '';
                     const imgHtml = i.image ? `<img src="${i.image}" class="w-28 h-28 object-cover rounded-xl shrink-0 shadow-md">` : '';
-                    return `<div class="glass-card p-4 flex gap-5 items-center animate-slide-up hover:border-[#D4AF37]/30 transition" style="animation-delay: ${idx * 0.05}s">
+                    return `<div class="glass-card p-4 flex gap-5 items-center animate-slide-up hover:border-[#D4AF37]/30 transition rounded-[20px]" style="animation-delay: ${idx * 0.05}s">
                         <div class="flex-1">
                             ${tagHtml}
                             <h3 class="text-white font-bold text-lg leading-tight mb-1.5 serif">${i.name}</h3>
@@ -536,7 +545,7 @@ async def serve_frontend():
                             <div class="text-[#D4AF37] font-black tracking-wide">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
                         </div>
                         ${imgHtml}
-                        <button onclick='openItemModal(${JSON.stringify(i).replace(/'/g, "&#39;")})' class="w-10 h-10 rounded-xl bg-gold text-dark flex items-center justify-center font-bold text-xl btn-press shrink-0 shadow-lg">+</button>
+                        <button onclick='openItemModal(${JSON.stringify(i).replace(/'/g, "&#39;")})' class="w-10 h-10 rounded-xl bg-gold text-dark flex items-center justify-center font-bold text-xl btn-press shrink-0 shadow-[0_4px_15px_rgba(212,175,55,0.4)]">+</button>
                     </div>`;
                 }).join('');
             }
@@ -588,7 +597,7 @@ async def serve_frontend():
                 document.getElementById('cart-items').innerHTML = cart.map(i => {
                     total += (i.price * i.qty);
                     const notesHtml = i.notes ? `<div class="text-xs text-[#D4AF37] mt-1.5 italic bg-[#D4AF37]/5 px-2 py-1 rounded border border-[#D4AF37]/10">Note: ${i.notes}</div>` : '';
-                    return `<div class="flex justify-between items-start bg-slate-800/80 p-4.5 rounded-2xl border border-white/5 shadow-sm">
+                    return `<div class="flex justify-between items-start bg-dark/60 p-4.5 rounded-2xl border border-white/5 shadow-inner mb-3">
                         <div class="flex-1 pr-4">
                             <div class="text-white font-bold text-sm leading-snug"><span class="text-[#D4AF37] mr-1">${i.qty}x</span> ${i.name}</div>
                             ${notesHtml}
@@ -647,7 +656,7 @@ async def serve_frontend():
                     let stColor = t.status === 'available' ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20' : 
                                  (t.status === 'occupied' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' : 
                                  'text-red-400 bg-red-400/10 border-red-400/20 animate-pulse');
-                    return `<div class="glass-card p-4.5 flex flex-col items-center text-center relative overflow-hidden">
+                    return `<div class="glass-card p-4.5 flex flex-col items-center text-center relative overflow-hidden rounded-[20px]">
                         ${t.status !== 'available' ? '<div class="absolute top-0 left-0 w-full h-1 bg-[#D4AF37]"></div>' : ''}
                         <div class="text-3xl font-bold text-white mb-2 serif">${t.number}</div>
                         <div class="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${stColor} mb-4">${t.status.replace('_',' ')}</div>
