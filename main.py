@@ -33,6 +33,7 @@ DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/premium_restaurant_pro.db")
 
+# FIX FOR RENDER.COM POSTGRESQL (check_same_thread issue)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -47,7 +48,7 @@ class Staff(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, unique=True, index=True)
     full_name = Column(String)
-    role = Column(String, default="admin")
+    role = Column(String, default="admin") # admin, waiter, kitchen
 
 class MenuItem(Base):
     __tablename__ = "menu_items"
@@ -57,24 +58,24 @@ class MenuItem(Base):
     price_thb = Column(Float, nullable=False)
     category = Column(String, default="Main Course", index=True)
     image_base64 = Column(Text, default="")
-    dietary_tags = Column(String, default="")
+    dietary_tags = Column(String, default="") 
     is_available = Column(Boolean, default=True)
 
 class RestaurantTable(Base):
     __tablename__ = "restaurant_tables"
     id = Column(Integer, primary_key=True)
     table_number = Column(String, unique=True, index=True)
-    secure_token = Column(String, unique=True, index=True)
-    status = Column(String, default="available")
+    secure_token = Column(String, unique=True, index=True) 
+    status = Column(String, default="available") 
 
 class DineInOrder(Base):
     __tablename__ = "dine_in_orders"
     id = Column(Integer, primary_key=True)
     table_id = Column(Integer, ForeignKey("restaurant_tables.id"))
     total_thb = Column(Float, default=0.0)
-    status = Column(String, default="received")
-    guest_count = Column(Integer, default=1)  # NEW: ဧည့်သည်အရေအတွက်
-    group_name = Column(String, default="Guest") # NEW: မိသားစုအမည်
+    status = Column(String, default="received") 
+    guest_count = Column(Integer, default=1)  # လူအရေအတွက်
+    group_name = Column(String, default="Guest") # မိသားစုအမည်
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     table = relationship("RestaurantTable")
     items = relationship("OrderItem", back_populates="order")
@@ -121,7 +122,7 @@ def get_current_staff(x_telegram_init_data: str = Header(None), db: Session = De
     return db_staff
 
 # ==========================================
-# 4. GUEST / DINE-IN APIs 
+# 4. GUEST / DINE-IN APIs
 # ==========================================
 @app.get("/api/guest/table/{secure_token}")
 def verify_table(secure_token: str, db: Session = Depends(get_db)):
@@ -205,7 +206,7 @@ async def request_service(req: Request, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 # ==========================================
-# 5. STAFF DASHBOARD APIs
+# 5. STAFF DASHBOARD APIs (Menu Mgmt Removed)
 # ==========================================
 @app.get("/api/staff/tables")
 def get_staff_tables(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
@@ -226,13 +227,6 @@ def clear_table(table_id: int, staff: Staff = Depends(get_current_staff), db: Se
     if table: table.status = "available"; db.commit()
     return {"status": "success"}
 
-@app.post("/api/staff/menu")
-async def add_menu_item(req: Request, staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
-    data = await req.json()
-    db.add(MenuItem(name=data['name'], description=data.get('description',''), price_thb=float(data['price']), category=data.get('category','Main'), dietary_tags=data.get('tags',''), image_base64=data.get('image','')))
-    db.commit()
-    return {"status": "success"}
-
 # ==========================================
 # 6. FRONTEND (PREMIUM GUEST UI & STAFF UI)
 # ==========================================
@@ -250,7 +244,7 @@ async def serve_frontend():
         <title>Coral Beach - Premium Dine-In</title>
         <style>
             :root { --gold: #D4AF37; --dark: #0f1115; --slate: #1e2430; }
-            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; }
+            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden;}
             h1, h2, h3, .serif { font-family: 'Playfair Display', serif; }
             
             .gold-gradient { background: linear-gradient(135deg, #F3E5AB, #D4AF37, #C5A028); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -264,12 +258,14 @@ async def serve_frontend():
             .modal-content { background: var(--slate); border-top-left-radius: 28px; border-top-right-radius: 28px; padding: 28px; border-top: 1px solid rgba(212, 175, 55, 0.2); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
             
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-            @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
             @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
             .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             
-            .step-view { transition: opacity 0.4s ease, transform 0.4s ease; }
-            .step-hidden { opacity: 0; transform: translateY(20px); pointer-events: none; position: absolute; width: 100%; top: 0; left: 0; }
+            /* စခရင်များ နောက်ဆုတ်သွားသည့် (Slide back) Effect အတွက် CSS */
+            .step-container { position: relative; width: 100%; min-height: 100vh; }
+            .step-view { transition: opacity 0.5s ease, transform 0.5s ease; width: 100%; position: absolute; top: 0; left: 0; }
+            .step-active { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; z-index: 20; position: relative; min-height: 100vh;}
+            .step-hidden { opacity: 0; transform: scale(0.92) translateY(-30px); pointer-events: none; z-index: 10; }
             
             #toast { visibility: hidden; background: #D4AF37; color: #000; text-align: center; border-radius: 12px; padding: 12px 20px; position: fixed; z-index: 1000; left: 50%; top: 40px; transform: translateX(-50%); font-weight: 800; font-size: 14px; box-shadow: 0 10px 25px rgba(212, 175, 55, 0.3); }
             #toast.show { visibility: visible; animation: fadeIn 0.3s, fadeIn 0.3s 3s reverse forwards; }
@@ -278,12 +274,12 @@ async def serve_frontend():
             ::-webkit-scrollbar-thumb { background: rgba(212, 175, 55, 0.3); border-radius: 10px; }
         </style>
     </head>
-    <body class="pb-28 relative min-h-screen">
+    <body class="pb-28">
         <div id="toast">Message</div>
 
-        <div id="guest-view" class="hidden h-full w-full">
+        <div id="guest-view" class="hidden step-container">
             
-            <div id="step-1" class="step-view min-h-screen flex flex-col items-center justify-center px-6 z-20 bg-dark">
+            <div id="step-1" class="step-view step-active flex flex-col items-center justify-center px-6 bg-dark">
                 <h1 class="text-4xl font-bold gold-gradient mb-2 serif text-center">Welcome</h1>
                 <p class="text-slate-400 mb-10 text-center tracking-widest text-xs uppercase">Coral Beach Restaurant</p>
                 
@@ -296,7 +292,7 @@ async def serve_frontend():
                 <button onclick="goToStep2()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">Confirm Table</button>
             </div>
 
-            <div id="step-2" class="step-view step-hidden min-h-screen flex flex-col items-center justify-center px-6 z-20 bg-dark">
+            <div id="step-2" class="step-view step-hidden flex flex-col items-center justify-center px-6 bg-dark">
                 <h2 class="text-3xl font-bold gold-gradient mb-8 serif text-center">Guest Details</h2>
                 
                 <div class="w-full max-w-sm space-y-6 mb-10">
@@ -318,7 +314,7 @@ async def serve_frontend():
                 <button onclick="goToStep3()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">View Food Menu</button>
             </div>
 
-            <div id="step-3" class="step-view step-hidden z-10 w-full pb-32">
+            <div id="step-3" class="step-view step-hidden pb-32">
                 <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
                     <div>
                         <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
@@ -395,34 +391,12 @@ async def serve_frontend():
                 <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
             </div>
             
-            <div class="flex bg-slate-800 p-1.5 rounded-xl mb-6 border border-white/5">
-                <button onclick="switchStaffTab('tables')" id="s-tab-tables" class="flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition">Tables</button>
-                <button onclick="switchStaffTab('menu')" id="s-tab-menu" class="flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition">Menu Mgmt</button>
-            </div>
-
             <div id="staff-tables-view">
                 <div class="glass-card p-4 mb-6 flex gap-3 border-[#D4AF37]/20">
                     <input type="text" id="new-table-num" placeholder="Table No (e.g. VIP-1)" class="flex-1 bg-slate-800/80 text-white px-4 py-3 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
                     <button onclick="createTable()" class="bg-gold text-dark font-bold px-5 rounded-xl btn-press text-sm">Create</button>
                 </div>
                 <div id="staff-table-list" class="grid grid-cols-2 gap-4"></div>
-            </div>
-
-            <div id="staff-menu-view" class="hidden">
-                <div class="glass-card p-6 mb-4 space-y-4">
-                    <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-2">Add New Menu Item</h3>
-                    <input type="text" id="new-m-name" placeholder="Item Name" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
-                    <input type="number" id="new-m-price" placeholder="Price (THB)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
-                    <input type="text" id="new-m-cat" placeholder="Category (e.g. Signature Cocktails)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
-                    <input type="text" id="new-m-tags" placeholder="Tags (e.g. Vegan, Gluten-Free)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
-                    <textarea id="new-m-desc" placeholder="Appetizing description..." class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] h-24 resize-none text-sm"></textarea>
-                    <div class="bg-slate-800/50 p-3 rounded-xl border border-white/5 border-dashed">
-                        <label class="block text-xs font-bold text-slate-400 mb-2">Upload Image</label>
-                        <input type="file" id="new-m-img" accept="image/*" class="text-xs text-slate-400 w-full file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-[#D4AF37]/10 file:text-[#D4AF37]" onchange="convertImg(this)">
-                    </div>
-                    <input type="hidden" id="new-m-img-b64">
-                    <button onclick="addMenuItem()" class="w-full bg-gold text-dark font-black py-4 rounded-xl mt-4 btn-press text-sm tracking-wide">SAVE MENU ITEM</button>
-                </div>
             </div>
         </div>
 
@@ -435,11 +409,8 @@ async def serve_frontend():
             let fullMenu = [];
             let cart = [];
             
-            // New Global States
-            let guestDetails = {
-                groupName: '',
-                paxCount: 2
-            };
+            // Global States
+            let guestDetails = { groupName: '', paxCount: 2 };
 
             function showToast(msg) {
                 const t = document.getElementById("toast");
@@ -459,10 +430,11 @@ async def serve_frontend():
                 secureToken = urlParams.get('table_token');
 
                 if (secureToken) {
-                    // Start at Step 1 (Table Confirm)
+                    // GUEST MODE
                     document.getElementById('guest-view').classList.remove('hidden');
                     await initGuestMode();
                 } else if (initData) {
+                    // STAFF MODE
                     tg.expand(); tg.ready();
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
@@ -471,18 +443,16 @@ async def serve_frontend():
                 }
             }
 
-            // ================= GUEST LOGIC (STEP FLOW) =================
+            // ================= GUEST LOGIC (STEP FLOW - SLIDE BACK) =================
             async function initGuestMode() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
                     if (!tRes.ok) throw new Error("Invalid Table");
                     currentTable = await tRes.json();
                     
-                    // Setup UI elements
                     document.getElementById('step1-table-num').innerText = currentTable.table_number;
                     document.getElementById('display-table-num').innerText = currentTable.table_number;
                     
-                    // Pre-fetch menu data
                     const mRes = await apiFetch(`/api/guest/menu`);
                     const mData = await mRes.json();
                     fullMenu = mData.items;
@@ -496,10 +466,13 @@ async def serve_frontend():
 
             function goToStep2() {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+                document.getElementById('step-1').classList.remove('step-active');
                 document.getElementById('step-1').classList.add('step-hidden');
+                
                 setTimeout(() => {
                     document.getElementById('step-2').classList.remove('step-hidden');
-                }, 100);
+                    document.getElementById('step-2').classList.add('step-active');
+                }, 200);
             }
 
             function adjustPax(delta) {
@@ -519,13 +492,14 @@ async def serve_frontend():
                 guestDetails.groupName = nameInput;
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 
+                document.getElementById('step-2').classList.remove('step-active');
                 document.getElementById('step-2').classList.add('step-hidden');
                 
-                // Show Main Menu System
                 setTimeout(() => {
                     document.getElementById('step-3').classList.remove('step-hidden');
-                    document.getElementById('step-3').style.position = 'relative';
-                }, 100);
+                    document.getElementById('step-3').classList.add('step-active');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }, 200);
             }
 
             // ================= MENU & CART LOGIC =================
@@ -665,13 +639,6 @@ async def serve_frontend():
             }
 
             // ================= STAFF LOGIC =================
-            function switchStaffTab(tab) {
-                document.getElementById('s-tab-tables').className = tab === 'tables' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
-                document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
-                document.getElementById('staff-tables-view').style.display = tab === 'tables' ? 'block' : 'none';
-                document.getElementById('staff-menu-view').style.display = tab === 'menu' ? 'block' : 'none';
-            }
-
             async function loadStaffTables() {
                 const res = await apiFetch('/api/staff/tables');
                 const tables = await res.json();
@@ -705,41 +672,6 @@ async def serve_frontend():
                     await apiFetch(`/api/staff/tables/${id}/clear`, { method: 'POST' });
                     loadStaffTables();
                 }
-            }
-
-            function convertImg(el) {
-                let file = el.files[0]; if(!file) return; let reader = new FileReader();
-                reader.onloadend = function(e) { 
-                    let img = new Image(); img.onload = function() {
-                        let canvas = document.createElement('canvas'); let ctx = canvas.getContext('2d');
-                        let maxW = 600; let maxH = 600; let width = img.width; let height = img.height;
-                        if (width > height) { if (width > maxW) { height *= maxW / width; width = maxW; } } else { if (height > maxH) { width *= maxH / height; height = maxH; } }
-                        canvas.width = width; canvas.height = height; ctx.drawImage(img, 0, 0, width, height);
-                        document.getElementById('new-m-img-b64').value = canvas.toDataURL('image/jpeg', 0.8);
-                    }; img.src = e.target.result;
-                }; reader.readAsDataURL(file);
-            }
-
-            async function addMenuItem() {
-                const payload = {
-                    name: document.getElementById('new-m-name').value,
-                    price: document.getElementById('new-m-price').value,
-                    category: document.getElementById('new-m-cat').value || 'Main Course',
-                    tags: document.getElementById('new-m-tags').value,
-                    description: document.getElementById('new-m-desc').value,
-                    image: document.getElementById('new-m-img-b64').value
-                };
-                if(!payload.name || !payload.price) return showToast("Name and price required");
-                
-                const btn = document.querySelector('#staff-menu-view button');
-                btn.innerText = "SAVING...";
-                await apiFetch('/api/staff/menu', { method: 'POST', body: JSON.stringify(payload) });
-                btn.innerText = "SAVE MENU ITEM";
-                showToast("Menu Item Added");
-                
-                document.getElementById('new-m-name').value = '';
-                document.getElementById('new-m-price').value = '';
-                document.getElementById('new-m-desc').value = '';
             }
 
             window.onload = initApp;
