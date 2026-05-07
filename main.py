@@ -226,6 +226,12 @@ def clear_table(table_id: int, staff: Staff = Depends(get_current_staff), db: Se
     if table: table.status = "available"; db.commit()
     return {"status": "success"}
 
+# --- Menu Management APIs (Add, Get List, Delete) ---
+@app.get("/api/staff/menu")
+def get_staff_menu_list(staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
+    items = db.query(MenuItem).order_by(MenuItem.id.desc()).all()
+    return [{"id": i.id, "name": i.name, "price": i.price_thb, "category": i.category, "image": i.image_base64} for i in items]
+
 @app.post("/api/staff/menu")
 async def add_menu_item(req: Request, staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
     data = await req.json()
@@ -238,6 +244,14 @@ async def add_menu_item(req: Request, staff: Staff = Depends(get_current_staff),
         image_base64=data.get('image','')
     ))
     db.commit()
+    return {"status": "success"}
+
+@app.delete("/api/staff/menu/{item_id}")
+def delete_menu_item(item_id: int, staff: Staff = Depends(get_current_staff), db: Session = Depends(get_db)):
+    item = db.query(MenuItem).filter(MenuItem.id == item_id).first()
+    if item:
+        db.delete(item)
+        db.commit()
     return {"status": "success"}
 
 # ==========================================
@@ -274,7 +288,7 @@ async def serve_frontend():
             @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
             .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
             
-            /* --- 3D SLIDE BACK ANIMATION SYSTEM (ကျစ်လျစ်သော နောက်ဆုတ် Effect) --- */
+            /* --- 3D SLIDE BACK ANIMATION SYSTEM --- */
             #auth-container { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; perspective: 1200px; padding: 20px; z-index: 50; background: radial-gradient(circle at center, #1e2430 0%, #0f1115 100%); transition: opacity 0.5s ease;}
             .step-card { position: absolute; width: 100%; max-width: 360px; transition: all 0.6s cubic-bezier(0.25, 1, 0.5, 1); backface-visibility: hidden; }
             
@@ -295,7 +309,6 @@ async def serve_frontend():
         <div id="guest-view" class="hidden">
             
             <div id="auth-container">
-                
                 <div id="step-1" class="step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]">
                     <div class="w-16 h-16 mx-auto mb-4 bg-gold rounded-full flex items-center justify-center text-dark text-3xl shadow-[0_0_20px_rgba(212,175,55,0.4)]">📍</div>
                     <h2 class="text-2xl font-bold gold-gradient mb-1 serif">Table Verify</h2>
@@ -330,7 +343,6 @@ async def serve_frontend():
                     
                     <button onclick="goToStep3()" class="w-full bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-sm btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">View Food Menu</button>
                 </div>
-                
             </div>
 
             <div id="step-3" class="hidden">
@@ -346,7 +358,6 @@ async def serve_frontend():
                 </header>
 
                 <div class="sticky top-0 z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav"></div>
-
                 <div id="guest-menu" class="p-5 space-y-5"></div>
 
                 <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
@@ -389,7 +400,6 @@ async def serve_frontend():
                 <input type="hidden" id="modal-item-price">
                 <h3 id="modal-item-name" class="text-2xl font-bold text-white mb-2 serif tracking-wide">Item Name</h3>
                 <div class="text-[#D4AF37] font-black text-lg mb-6" id="modal-item-price-display">฿0.00</div>
-                
                 <label class="block text-xs font-bold tracking-widest text-slate-400 uppercase mb-3">Special Requests & Dietary Options</label>
                 <textarea id="modal-item-notes" placeholder="e.g. No spicy, dressing on the side, allergies..." class="w-full bg-slate-800/50 text-white border border-white/10 rounded-2xl p-4 outline-none focus:border-[#D4AF37] transition mb-8 resize-none h-28 text-sm placeholder-slate-500"></textarea>
                 
@@ -424,7 +434,7 @@ async def serve_frontend():
             </div>
 
             <div id="staff-menu-view" class="hidden">
-                <div class="glass-card p-6 mb-4 space-y-4 rounded-2xl">
+                <div class="glass-card p-6 mb-6 space-y-4 rounded-2xl">
                     <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-2">Add New Menu Item</h3>
                     <input type="text" id="new-m-name" placeholder="Item Name" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
                     <input type="number" id="new-m-price" placeholder="Price (THB)" class="w-full bg-slate-800/80 text-white p-3.5 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] text-sm">
@@ -438,6 +448,12 @@ async def serve_frontend():
                     <input type="hidden" id="new-m-img-b64">
                     <button onclick="addMenuItem()" class="w-full bg-gold text-dark font-black py-4 rounded-xl mt-4 btn-press text-sm tracking-wide">SAVE MENU ITEM</button>
                 </div>
+                
+                <div class="glass-card p-6 rounded-2xl">
+                    <h3 class="font-bold text-[#D4AF37] uppercase tracking-wider text-xs mb-4">Current Menu Items</h3>
+                    <div id="staff-menu-list" class="space-y-3 max-h-[50vh] overflow-y-auto pr-2">
+                        </div>
+                </div>
             </div>
         </div>
 
@@ -449,8 +465,6 @@ async def serve_frontend():
             let currentTable = null;
             let fullMenu = [];
             let cart = [];
-            
-            // Global States
             let guestDetails = { groupName: '', paxCount: 2 };
 
             function showToast(msg) {
@@ -471,11 +485,9 @@ async def serve_frontend():
                 secureToken = urlParams.get('table_token');
 
                 if (secureToken) {
-                    // GUEST MODE
                     document.getElementById('guest-view').classList.remove('hidden');
                     await initGuestMode();
                 } else if (initData) {
-                    // STAFF MODE
                     tg.expand(); tg.ready();
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
@@ -484,7 +496,7 @@ async def serve_frontend():
                 }
             }
 
-            // ================= GUEST LOGIC (3D SLIDE BACK FLOW) =================
+            // ================= GUEST LOGIC =================
             async function initGuestMode() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
@@ -499,7 +511,6 @@ async def serve_frontend():
                     fullMenu = mData.items;
                     renderCategories(mData.categories);
                     renderGuestMenu(fullMenu);
-                    
                 } catch (e) {
                     document.getElementById('guest-view').innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl shadow-[0_0_20px_rgba(239,68,68,0.3)]'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
                 }
@@ -507,11 +518,8 @@ async def serve_frontend():
 
             function goToStep2() {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-                const step1 = document.getElementById('step-1');
-                const step2 = document.getElementById('step-2');
-                
-                step1.className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
-                step2.className = "step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                document.getElementById('step-1').className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
+                document.getElementById('step-2').className = "step-card step-active glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
             }
 
             function adjustPax(delta) {
@@ -523,17 +531,11 @@ async def serve_frontend():
 
             function goToStep3() {
                 let nameInput = document.getElementById('guest-group-name').value.trim();
-                if (!nameInput) {
-                    showToast("Please enter Group / Family name");
-                    return;
-                }
-                
+                if (!nameInput) return showToast("Please enter Group / Family name");
                 guestDetails.groupName = nameInput;
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 
-                const step2 = document.getElementById('step-2');
-                step2.className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
-                
+                document.getElementById('step-2').className = "step-card step-past glass-card p-8 text-center shadow-[0_20px_50px_rgba(0,0,0,0.5)] border-[#D4AF37]/30 rounded-[32px]";
                 document.getElementById('auth-container').style.opacity = '0';
                 
                 setTimeout(() => {
@@ -545,7 +547,6 @@ async def serve_frontend():
                 }, 500);
             }
 
-            // ================= MENU & CART LOGIC =================
             function renderCategories(cats) {
                 if(!cats.length) cats = ["Main Course"];
                 let html = `<button onclick="filterMenu('All')" class="px-5 py-2.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold tracking-wide transition">All Items</button>`;
@@ -563,8 +564,7 @@ async def serve_frontend():
                         b.className = "px-5 py-2.5 rounded-full border border-white/10 bg-slate-800/50 text-slate-300 hover:text-white whitespace-nowrap text-sm font-bold tracking-wide transition";
                     }
                 }
-                const filtered = cat === 'All' ? fullMenu : fullMenu.filter(i => i.category === cat);
-                renderGuestMenu(filtered);
+                renderGuestMenu(cat === 'All' ? fullMenu : fullMenu.filter(i => i.category === cat));
             }
 
             function renderGuestMenu(items) {
@@ -610,17 +610,13 @@ async def serve_frontend():
                 const notes = document.getElementById('modal-item-notes').value.trim();
                 
                 cart.push({ id, name, price, qty, notes, cart_id: Date.now() });
-                
-                updateCartBadge();
-                closeItemModal();
-                showToast("Added to order");
+                updateCartBadge(); closeItemModal(); showToast("Added to order");
             }
 
             function updateCartBadge() {
                 const b = document.getElementById('cart-badge');
                 const t = cart.reduce((s, i) => s + i.qty, 0);
-                b.innerText = t;
-                b.classList.toggle('hidden', t === 0);
+                b.innerText = t; b.classList.toggle('hidden', t === 0);
             }
 
             function openCart() {
@@ -657,18 +653,9 @@ async def serve_frontend():
                 
                 try {
                     const res = await apiFetch('/api/guest/order', { 
-                        method: 'POST', 
-                        body: JSON.stringify({ 
-                            secure_token: secureToken, 
-                            cart: cart,
-                            guest_pax: guestDetails.paxCount,
-                            group_name: guestDetails.groupName 
-                        }) 
+                        method: 'POST', body: JSON.stringify({ secure_token: secureToken, cart: cart, guest_pax: guestDetails.paxCount, group_name: guestDetails.groupName }) 
                     });
-                    if (res.ok) {
-                        showToast("✅ Order Sent to Kitchen!");
-                        cart = []; updateCartBadge(); closeCart();
-                    } else throw new Error();
+                    if (res.ok) { showToast("✅ Order Sent to Kitchen!"); cart = []; updateCartBadge(); closeCart(); } else throw new Error();
                 } catch(e) { showToast("⚠️ Error connecting to kitchen."); }
                 finally { btn.innerText = "CONFIRM ORDER"; btn.disabled = false; }
             }
@@ -687,6 +674,8 @@ async def serve_frontend():
                 document.getElementById('s-tab-menu').className = tab === 'menu' ? 'flex-1 py-2.5 rounded-lg bg-slate-700 text-white font-bold text-sm shadow-sm transition' : 'flex-1 py-2.5 rounded-lg text-slate-400 font-bold text-sm hover:text-white transition';
                 document.getElementById('staff-tables-view').style.display = tab === 'tables' ? 'block' : 'none';
                 document.getElementById('staff-menu-view').style.display = tab === 'menu' ? 'block' : 'none';
+                
+                if (tab === 'menu') loadStaffMenu();
             }
 
             async function loadStaffTables() {
@@ -757,6 +746,50 @@ async def serve_frontend():
                 document.getElementById('new-m-name').value = '';
                 document.getElementById('new-m-price').value = '';
                 document.getElementById('new-m-desc').value = '';
+                document.getElementById('new-m-img-b64').value = '';
+                document.getElementById('new-m-img').value = '';
+                
+                // Refresh list automatically after adding
+                loadStaffMenu();
+            }
+
+            // Function to load menu items into the list view
+            async function loadStaffMenu() {
+                const res = await apiFetch('/api/staff/menu');
+                const items = await res.json();
+                const listContainer = document.getElementById('staff-menu-list');
+                
+                if (items.length === 0) {
+                    listContainer.innerHTML = `<p class="text-slate-400 text-xs text-center italic py-4">No menu items found.</p>`;
+                    return;
+                }
+                
+                listContainer.innerHTML = items.map(i => `
+                    <div class="flex items-center justify-between bg-dark/60 p-3 rounded-xl border border-white/5">
+                        <div class="flex items-center gap-3">
+                            ${i.image ? `<img src="${i.image}" class="w-10 h-10 object-cover rounded-lg shadow-sm">` : `<div class="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center text-[9px] text-slate-500 font-bold uppercase">No Img</div>`}
+                            <div>
+                                <div class="text-white font-bold text-sm">${i.name}</div>
+                                <div class="text-[#D4AF37] text-xs font-black tracking-wide">฿${i.price.toLocaleString(undefined, {minimumFractionDigits: 2})} <span class="text-slate-500 font-semibold ml-1 text-[10px] uppercase tracking-widest">${i.category}</span></div>
+                            </div>
+                        </div>
+                        <button onclick="deleteMenuItem(${i.id})" class="text-red-400 bg-red-400/10 w-8 h-8 rounded-lg flex items-center justify-center font-bold border border-red-400/20 btn-press transition hover:bg-red-400/20 shadow-sm">✕</button>
+                    </div>
+                `).join('');
+            }
+
+            // Function to delete a menu item
+            async function deleteMenuItem(id) {
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+                if(!confirm('Are you sure you want to delete this menu item?')) return;
+                
+                const res = await apiFetch(`/api/staff/menu/${id}`, { method: 'DELETE' });
+                if(res.ok) {
+                    showToast("Menu Item Deleted");
+                    loadStaffMenu();
+                } else {
+                    showToast("Error deleting item");
+                }
             }
 
             window.onload = initApp;
