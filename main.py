@@ -33,7 +33,6 @@ DATA_DIR = "./data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR}/premium_restaurant_pro.db")
 
-# FIX FOR RENDER.COM POSTGRESQL (check_same_thread issue)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -72,10 +71,10 @@ class DineInOrder(Base):
     __tablename__ = "dine_in_orders"
     id = Column(Integer, primary_key=True)
     table_id = Column(Integer, ForeignKey("restaurant_tables.id"))
-    guest_name = Column(String, default="Guest")
-    party_size = Column(Integer, default=1)
     total_thb = Column(Float, default=0.0)
-    status = Column(String, default="received") 
+    status = Column(String, default="received")
+    guest_count = Column(Integer, default=1)  # NEW: ဧည့်သည်အရေအတွက်
+    group_name = Column(String, default="Guest") # NEW: မိသားစုအမည်
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     table = relationship("RestaurantTable")
     items = relationship("OrderItem", back_populates="order")
@@ -92,14 +91,6 @@ class OrderItem(Base):
     menu_item = relationship("MenuItem")
 
 Base.metadata.create_all(bind=engine)
-
-# Auto-migrate new fields if upgrading existing SQLite DB
-try:
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE dine_in_orders ADD COLUMN guest_name VARCHAR DEFAULT 'Guest'"))
-        conn.execute(text("ALTER TABLE dine_in_orders ADD COLUMN party_size INTEGER DEFAULT 1"))
-except Exception:
-    pass
 
 def get_db():
     db = SessionLocal()
@@ -130,7 +121,7 @@ def get_current_staff(x_telegram_init_data: str = Header(None), db: Session = De
     return db_staff
 
 # ==========================================
-# 4. GUEST / DINE-IN APIs (SECURED BY TOKEN)
+# 4. GUEST / DINE-IN APIs 
 # ==========================================
 @app.get("/api/guest/table/{secure_token}")
 def verify_table(secure_token: str, db: Session = Depends(get_db)):
@@ -148,14 +139,14 @@ def get_menu_guest(db: Session = Depends(get_db)):
 async def place_order(req: Request, db: Session = Depends(get_db)):
     data = await req.json()
     secure_token = data.get('secure_token')
-    guest_name = data.get('guest_name', 'Guest')
-    party_size = data.get('party_size', 1)
     cart = data.get('cart', [])
+    guest_pax = data.get('guest_pax', 1)
+    group_name = data.get('group_name', 'Guest')
     
     table = db.query(RestaurantTable).filter(RestaurantTable.secure_token == secure_token).first()
     if not table or not cart: raise HTTPException(status_code=400, detail="Invalid Order")
 
-    new_order = DineInOrder(table_id=table.id, guest_name=guest_name, party_size=party_size, total_thb=0.0)
+    new_order = DineInOrder(table_id=table.id, total_thb=0.0, guest_count=guest_pax, group_name=group_name)
     db.add(new_order)
     db.flush()
 
@@ -181,7 +172,7 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
     staff_members = db.query(Staff).all()
     dispatch_msg = (
         f"🔔 **NEW ORDER | Table {table.table_number}**\n"
-        f"👨‍👩‍👧‍👦 **Group:** {guest_name} ({party_size} Pax)\n\n"
+        f"👥 **Group:** {group_name} ({guest_pax} Pax)\n\n"
         + "\n".join(receipt_lines) + 
         f"\n\n💰 **Total: ฿{total_thb:,.2f}**"
     )
@@ -196,8 +187,7 @@ async def place_order(req: Request, db: Session = Depends(get_db)):
 async def request_service(req: Request, db: Session = Depends(get_db)):
     data = await req.json()
     secure_token = data.get('secure_token')
-    service_type = data.get('type')
-    guest_name = data.get('guest_name', 'Guest')
+    service_type = data.get('type') 
     
     table = db.query(RestaurantTable).filter(RestaurantTable.secure_token == secure_token).first()
     if not table: raise HTTPException(status_code=400)
@@ -209,7 +199,7 @@ async def request_service(req: Request, db: Session = Depends(get_db)):
     alert_text = "Waitstaff Requested" if service_type == "waiter" else "Bill Requested"
     
     for staff in db.query(Staff).all():
-        try: bot.send_message(staff.telegram_id, f"{alert_icon} **{alert_text} | Table {table.table_number}**\n_Group: {guest_name}_\n_Please attend immediately._", parse_mode="Markdown")
+        try: bot.send_message(staff.telegram_id, f"{alert_icon} **{alert_text} | Table {table.table_number}**\n_Please attend to the guests immediately._", parse_mode="Markdown")
         except: pass
         
     return {"status": "success"}
@@ -260,7 +250,7 @@ async def serve_frontend():
         <title>Coral Beach - Premium Dine-In</title>
         <style>
             :root { --gold: #D4AF37; --dark: #0f1115; --slate: #1e2430; }
-            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+            body { font-family: 'Inter', sans-serif; background-color: var(--dark); color: #f8fafc; -webkit-tap-highlight-color: transparent; }
             h1, h2, h3, .serif { font-family: 'Playfair Display', serif; }
             
             .gold-gradient { background: linear-gradient(135deg, #F3E5AB, #D4AF37, #C5A028); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -269,20 +259,17 @@ async def serve_frontend():
             .glass-card { background: rgba(30, 36, 48, 0.6); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 20px; }
             .btn-press:active { transform: scale(0.96); transition: transform 0.1s ease; }
             
-            /* Slide Animations */
-            .panel { position: fixed; inset: 0; background: var(--dark); z-index: 40; display: flex; flex-direction: column; transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.4s ease; }
-            .panel.hidden-state { display: none; }
-            .slide-out-left { transform: translateX(-100%); opacity: 0; pointer-events: none; }
-            .slide-in-right { transform: translateX(100%); opacity: 0; }
-            .slide-active { transform: translateX(0); opacity: 1; }
-
             .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100; display: none; flex-direction: column; justify-content: flex-end; }
             .modal.active { display: flex; animation: fadeIn 0.3s; }
             .modal-content { background: var(--slate); border-top-left-radius: 28px; border-top-right-radius: 28px; padding: 28px; border-top: 1px solid rgba(212, 175, 55, 0.2); box-shadow: 0 -10px 40px rgba(0,0,0,0.5); }
             
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+            @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
             @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
             .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+            
+            .step-view { transition: opacity 0.4s ease, transform 0.4s ease; }
+            .step-hidden { opacity: 0; transform: translateY(20px); pointer-events: none; position: absolute; width: 100%; top: 0; left: 0; }
             
             #toast { visibility: hidden; background: #D4AF37; color: #000; text-align: center; border-radius: 12px; padding: 12px 20px; position: fixed; z-index: 1000; left: 50%; top: 40px; transform: translateX(-50%); font-weight: 800; font-size: 14px; box-shadow: 0 10px 25px rgba(212, 175, 55, 0.3); }
             #toast.show { visibility: visible; animation: fadeIn 0.3s, fadeIn 0.3s 3s reverse forwards; }
@@ -291,92 +278,78 @@ async def serve_frontend():
             ::-webkit-scrollbar-thumb { background: rgba(212, 175, 55, 0.3); border-radius: 10px; }
         </style>
     </head>
-    <body>
+    <body class="pb-28 relative min-h-screen">
         <div id="toast">Message</div>
 
-        <div id="step-1" class="panel slide-active justify-center items-center px-6 text-center hidden-state">
-            <div class="mb-8 animate-slide-up">
-                <div class="w-24 h-24 mx-auto mb-6 rounded-full border border-[#D4AF37]/50 flex items-center justify-center bg-[#D4AF37]/5 shadow-[0_0_30px_rgba(212,175,55,0.15)]">
-                    <span class="text-4xl">🍽️</span>
-                </div>
-                <h1 class="text-3xl font-bold gold-gradient mb-2 serif">Coral Beach</h1>
-                <p class="text-xs tracking-[0.2em] text-slate-400 uppercase font-semibold">Welcome to our Lounge</p>
-            </div>
+        <div id="guest-view" class="hidden h-full w-full">
             
-            <div class="glass-card w-full p-8 mb-8 animate-slide-up" style="animation-delay: 0.1s;">
-                <p class="text-sm text-slate-400 uppercase tracking-widest font-bold mb-2">You are seated at</p>
-                <div class="text-6xl font-black text-white serif mb-1" id="step1-table-num">--</div>
-                <p class="text-xs text-[#D4AF37]">Premium Ocean View</p>
-            </div>
-            
-            <button onclick="goToStep2()" class="w-full bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_25px_rgba(212,175,55,0.3)] animate-slide-up uppercase" style="animation-delay: 0.2s;">
-                Confirm Table
-            </button>
-        </div>
-
-        <div id="step-2" class="panel slide-in-right justify-center px-6 hidden-state">
-            <button onclick="goToStep1()" class="absolute top-10 left-6 text-slate-400 p-2 text-xl btn-press">&larr; Back</button>
-            
-            <div class="mb-10 text-center animate-slide-up">
-                <h2 class="text-3xl font-bold gold-gradient mb-3 serif">Who is joining us?</h2>
-                <p class="text-sm text-slate-400">Let us personalize your experience.</p>
-            </div>
-            
-            <div class="space-y-6 w-full animate-slide-up" style="animation-delay: 0.1s;">
-                <div class="glass-card p-5">
-                    <label class="block text-xs font-bold tracking-widest text-[#D4AF37] uppercase mb-3">Family / Group Name</label>
-                    <input type="text" id="guest-name-input" placeholder="e.g. Smith Family" class="w-full bg-transparent text-white text-xl border-b border-white/20 pb-2 outline-none focus:border-[#D4AF37] transition placeholder-slate-600 font-serif">
+            <div id="step-1" class="step-view min-h-screen flex flex-col items-center justify-center px-6 z-20 bg-dark">
+                <h1 class="text-4xl font-bold gold-gradient mb-2 serif text-center">Welcome</h1>
+                <p class="text-slate-400 mb-10 text-center tracking-widest text-xs uppercase">Coral Beach Restaurant</p>
+                
+                <div class="glass-card p-10 text-center w-full max-w-sm mb-10 border-[#D4AF37]/20 shadow-[0_10px_30px_rgba(0,0,0,0.5)]">
+                    <p class="text-[10px] text-[#D4AF37] uppercase tracking-widest mb-3 font-bold">You are seated at Table</p>
+                    <div class="text-7xl font-black text-white mb-3 serif" id="step1-table-num">--</div>
+                    <p class="text-slate-400 text-xs mt-4">Please confirm to continue</p>
                 </div>
                 
-                <div class="glass-card p-5 flex justify-between items-center">
-                    <label class="block text-xs font-bold tracking-widest text-[#D4AF37] uppercase">Number of Guests</label>
-                    <div class="flex items-center gap-4 bg-slate-800/80 rounded-xl p-1 shadow-inner border border-white/5">
-                        <button onclick="adjustPartySize(-1)" class="w-10 h-10 flex items-center justify-center text-xl text-white btn-press rounded-lg hover:bg-white/5">-</button>
-                        <span id="party-size-display" class="font-black text-xl w-6 text-center text-white">1</span>
-                        <button onclick="adjustPartySize(1)" class="w-10 h-10 flex items-center justify-center text-xl text-[#D4AF37] btn-press rounded-lg hover:bg-[#D4AF37]/10">+</button>
+                <button onclick="goToStep2()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">Confirm Table</button>
+            </div>
+
+            <div id="step-2" class="step-view step-hidden min-h-screen flex flex-col items-center justify-center px-6 z-20 bg-dark">
+                <h2 class="text-3xl font-bold gold-gradient mb-8 serif text-center">Guest Details</h2>
+                
+                <div class="w-full max-w-sm space-y-6 mb-10">
+                    <div class="glass-card p-6 border-[#D4AF37]/10">
+                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-3">Group / Family Name</label>
+                        <input type="text" id="guest-group-name" placeholder="e.g. Smith Family" class="w-full bg-slate-800/80 text-white p-4 rounded-xl border border-white/10 outline-none focus:border-[#D4AF37] transition font-medium">
+                    </div>
+                    
+                    <div class="glass-card p-6 border-[#D4AF37]/10">
+                        <label class="block text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest mb-3">Number of People</label>
+                        <div class="flex items-center justify-between bg-slate-800/80 border border-white/10 rounded-xl p-2">
+                            <button onclick="adjustPax(-1)" class="w-14 h-14 flex items-center justify-center text-3xl text-white rounded-lg hover:bg-white/5 transition btn-press">-</button>
+                            <span id="guest-pax-count" class="font-black text-3xl text-white serif w-12 text-center">2</span>
+                            <button onclick="adjustPax(1)" class="w-14 h-14 flex items-center justify-center text-3xl text-dark rounded-lg bg-gold shadow-md btn-press">+</button>
+                        </div>
                     </div>
                 </div>
+                
+                <button onclick="goToStep3()" class="w-full max-w-sm bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_20px_rgba(212,175,55,0.3)] uppercase">View Food Menu</button>
             </div>
-            
-            <button onclick="goToMenu()" class="w-full mt-10 bg-gold text-dark font-black tracking-widest py-4.5 rounded-2xl text-lg btn-press shadow-[0_4px_25px_rgba(212,175,55,0.3)] animate-slide-up uppercase" style="animation-delay: 0.2s;">
-                Open Menu
-            </button>
-        </div>
 
+            <div id="step-3" class="step-view step-hidden z-10 w-full pb-32">
+                <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
+                    <div>
+                        <h1 class="text-3xl font-bold gold-gradient mb-1">Coral Beach</h1>
+                        <p class="text-[10px] tracking-[0.2em] text-slate-400 uppercase font-semibold">Restaurant & Lounge</p>
+                    </div>
+                    <div class="px-4 py-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 flex flex-col items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.1)]">
+                        <span class="text-[9px] text-[#D4AF37] uppercase tracking-widest mb-0.5">Table</span>
+                        <span id="display-table-num" class="text-white font-bold text-lg leading-none">--</span>
+                    </div>
+                </header>
 
-        <div id="step-3" class="panel slide-in-right pb-28 hidden-state" style="overflow-y: auto;">
-            <header class="pt-8 pb-4 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent sticky top-0 z-40">
-                <div>
-                    <h1 class="text-2xl font-bold gold-gradient mb-1">Coral Beach</h1>
-                    <p id="menu-greeting" class="text-[10px] tracking-[0.1em] text-slate-400 uppercase font-semibold">Welcome, Guest</p>
-                </div>
-                <div class="px-4 py-2 rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 flex flex-col items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.1)]">
-                    <span class="text-[9px] text-[#D4AF37] uppercase tracking-widest mb-0.5">Table</span>
-                    <span id="display-table-num" class="text-white font-bold text-lg leading-none">--</span>
-                </div>
-            </header>
+                <div class="sticky top-0 z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-4 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav"></div>
 
-            <div class="sticky top-[72px] z-40 bg-dark/95 backdrop-blur-md border-b border-white/5 py-3 px-6 flex gap-3 overflow-x-auto scrollbar-hide" id="category-nav">
-                </div>
+                <div id="guest-menu" class="p-5 space-y-5"></div>
 
-            <div id="guest-menu" class="p-5 space-y-5">
-                </div>
-
-            <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)] bg-dark/95 backdrop-blur-xl">
-                <div class="flex gap-3">
-                    <button onclick="requestService('waiter')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
-                        <span class="text-xl mb-0.5">🙋‍♂️</span>
-                        <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Call</span>
-                    </button>
-                    <button onclick="requestService('bill')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
-                        <span class="text-xl mb-0.5">💳</span>
-                        <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Bill</span>
+                <div class="fixed bottom-0 w-full glass-card rounded-none border-t border-[#D4AF37]/10 p-5 flex justify-between items-center z-50 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+                    <div class="flex gap-3">
+                        <button onclick="requestService('waiter')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
+                            <span class="text-xl mb-0.5">🙋‍♂️</span>
+                            <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Call</span>
+                        </button>
+                        <button onclick="requestService('bill')" class="w-14 h-14 rounded-2xl border border-white/10 flex flex-col items-center justify-center bg-slate-800/80 btn-press hover:bg-slate-700 transition">
+                            <span class="text-xl mb-0.5">💳</span>
+                            <span class="text-[9px] font-bold text-slate-300 uppercase tracking-wide">Bill</span>
+                        </button>
+                    </div>
+                    <button onclick="openCart()" class="bg-gold text-dark font-bold px-7 py-4 rounded-2xl flex items-center gap-4 btn-press shadow-[0_4px_25px_rgba(212,175,55,0.4)]">
+                        <span class="text-base tracking-wide">View Order</span>
+                        <div id="cart-badge" class="bg-dark text-white text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center hidden shadow-inner">0</div>
                     </button>
                 </div>
-                <button onclick="openCart()" class="bg-gold text-dark font-bold px-7 py-4 rounded-2xl flex items-center gap-4 btn-press shadow-[0_4px_25px_rgba(212,175,55,0.4)]">
-                    <span class="text-base tracking-wide">View Order</span>
-                    <div id="cart-badge" class="bg-dark text-white text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center hidden shadow-inner">0</div>
-                </button>
             </div>
         </div>
 
@@ -416,8 +389,7 @@ async def serve_frontend():
             </div>
         </div>
 
-
-        <div id="staff-view" class="hidden p-5 bg-dark min-h-screen">
+        <div id="staff-view" class="hidden p-5">
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-2xl font-bold gold-gradient serif">Staff Dashboard</h2>
                 <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20">Online</span>
@@ -458,16 +430,17 @@ async def serve_frontend():
             const tg = window.Telegram.WebApp;
             const initData = tg.initData;
             
-            // App State
             let secureToken = null;
             let currentTable = null;
             let fullMenu = [];
             let cart = [];
             
-            // Guest Session State
-            let guestName = "Guest";
-            let partySize = 1;
-            
+            // New Global States
+            let guestDetails = {
+                groupName: '',
+                paxCount: 2
+            };
+
             function showToast(msg) {
                 const t = document.getElementById("toast");
                 t.innerText = msg; t.className = "show";
@@ -486,11 +459,10 @@ async def serve_frontend():
                 secureToken = urlParams.get('table_token');
 
                 if (secureToken) {
-                    // Start Guest Onboarding Flow
-                    document.getElementById('step-1').classList.remove('hidden-state');
-                    await fetchTableAndMenu();
+                    // Start at Step 1 (Table Confirm)
+                    document.getElementById('guest-view').classList.remove('hidden');
+                    await initGuestMode();
                 } else if (initData) {
-                    // STAFF MODE
                     tg.expand(); tg.ready();
                     document.getElementById('staff-view').classList.remove('hidden');
                     loadStaffTables();
@@ -499,94 +471,64 @@ async def serve_frontend():
                 }
             }
 
-            // ================= GUEST ONBOARDING & NAVIGATION =================
-            
-            async function fetchTableAndMenu() {
+            // ================= GUEST LOGIC (STEP FLOW) =================
+            async function initGuestMode() {
                 try {
                     const tRes = await apiFetch(`/api/guest/table/${secureToken}`);
                     if (!tRes.ok) throw new Error("Invalid Table");
                     currentTable = await tRes.json();
                     
+                    // Setup UI elements
                     document.getElementById('step1-table-num').innerText = currentTable.table_number;
                     document.getElementById('display-table-num').innerText = currentTable.table_number;
                     
+                    // Pre-fetch menu data
                     const mRes = await apiFetch(`/api/guest/menu`);
                     const mData = await mRes.json();
                     fullMenu = mData.items;
-                    renderGuestMenu(fullMenu);
                     renderCategories(mData.categories);
+                    renderGuestMenu(fullMenu);
+                    
                 } catch (e) {
-                    document.body.innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
+                    document.getElementById('guest-view').innerHTML = `<div class='flex flex-col items-center justify-center h-screen px-6 text-center bg-dark'><div class='w-20 h-20 mb-6 rounded-full border-2 border-red-500/50 bg-red-500/10 flex items-center justify-center text-red-500 text-3xl'>⚠️</div><h2 class='text-xl font-bold text-white mb-3'>Session Expired</h2><p class='text-slate-400 text-sm'>Your session is invalid or has expired. Please scan the QR code on your table again.</p></div>`;
                 }
             }
 
             function goToStep2() {
-                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                const step1 = document.getElementById('step-1');
-                const step2 = document.getElementById('step-2');
-                
-                step1.classList.remove('slide-active');
-                step1.classList.add('slide-out-left');
-                
+                if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+                document.getElementById('step-1').classList.add('step-hidden');
                 setTimeout(() => {
-                    step1.classList.add('hidden-state');
-                    step2.classList.remove('hidden-state');
-                    // Trigger reflow
-                    void step2.offsetWidth;
-                    step2.classList.remove('slide-in-right');
-                    step2.classList.add('slide-active');
-                }, 300);
+                    document.getElementById('step-2').classList.remove('step-hidden');
+                }, 100);
             }
 
-            function goToStep1() {
+            function adjustPax(delta) {
                 if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                const step1 = document.getElementById('step-1');
-                const step2 = document.getElementById('step-2');
-                
-                step2.classList.remove('slide-active');
-                step2.classList.add('slide-in-right'); // Push back to right
-                
-                setTimeout(() => {
-                    step2.classList.add('hidden-state');
-                    step1.classList.remove('hidden-state');
-                    step1.classList.remove('slide-out-left');
-                    step1.classList.add('slide-active');
-                }, 300);
+                guestDetails.paxCount += delta;
+                if(guestDetails.paxCount < 1) guestDetails.paxCount = 1;
+                document.getElementById('guest-pax-count').innerText = guestDetails.paxCount;
             }
 
-            function adjustPartySize(delta) {
-                if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
-                let current = parseInt(document.getElementById('party-size-display').innerText);
-                if (current + delta > 0 && current + delta <= 20) {
-                    document.getElementById('party-size-display').innerText = current + delta;
+            function goToStep3() {
+                let nameInput = document.getElementById('guest-group-name').value.trim();
+                if (!nameInput) {
+                    showToast("Please enter a Group / Family name");
+                    return;
                 }
-            }
-
-            function goToMenu() {
+                
+                guestDetails.groupName = nameInput;
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 
-                guestName = document.getElementById('guest-name-input').value.trim() || "Guest";
-                partySize = parseInt(document.getElementById('party-size-display').innerText);
+                document.getElementById('step-2').classList.add('step-hidden');
                 
-                document.getElementById('menu-greeting').innerText = `Welcome, ${guestName}`;
-                
-                const step2 = document.getElementById('step-2');
-                const step3 = document.getElementById('step-3');
-                
-                step2.classList.remove('slide-active');
-                step2.classList.add('slide-out-left');
-                
+                // Show Main Menu System
                 setTimeout(() => {
-                    step2.classList.add('hidden-state');
-                    step3.classList.remove('hidden-state');
-                    void step3.offsetWidth;
-                    step3.classList.remove('slide-in-right');
-                    step3.classList.add('slide-active');
-                }, 300);
+                    document.getElementById('step-3').classList.remove('step-hidden');
+                    document.getElementById('step-3').style.position = 'relative';
+                }, 100);
             }
 
-            // ================= GUEST MENU LOGIC =================
-            
+            // ================= MENU & CART LOGIC =================
             function renderCategories(cats) {
                 if(!cats.length) cats = ["Main Course"];
                 let html = `<button onclick="filterMenu('All')" class="px-5 py-2.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37] text-[#D4AF37] whitespace-nowrap text-sm font-bold tracking-wide transition">All Items</button>`;
@@ -697,13 +639,15 @@ async def serve_frontend():
                 btn.innerText = "SENDING ORDER..."; btn.disabled = true;
                 
                 try {
-                    const payload = { 
-                        secure_token: secureToken, 
-                        guest_name: guestName,
-                        party_size: partySize,
-                        cart: cart 
-                    };
-                    const res = await apiFetch('/api/guest/order', { method: 'POST', body: JSON.stringify(payload) });
+                    const res = await apiFetch('/api/guest/order', { 
+                        method: 'POST', 
+                        body: JSON.stringify({ 
+                            secure_token: secureToken, 
+                            cart: cart,
+                            guest_pax: guestDetails.paxCount,
+                            group_name: guestDetails.groupName 
+                        }) 
+                    });
                     if (res.ok) {
                         showToast("✅ Order Sent to Kitchen!");
                         cart = []; updateCartBadge(); closeCart();
@@ -715,7 +659,7 @@ async def serve_frontend():
             async function requestService(type) {
                 if(tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
                 try {
-                    await apiFetch('/api/guest/service', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, type: type, guest_name: guestName }) });
+                    await apiFetch('/api/guest/service', { method: 'POST', body: JSON.stringify({ secure_token: secureToken, type: type }) });
                     showToast(type === 'waiter' ? "🙋‍♂️ Waiter called. Please wait." : "💳 Bill requested. Staff will be with you shortly.");
                 } catch(e) { showToast("Error connecting to staff."); }
             }
